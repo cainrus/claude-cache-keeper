@@ -20,6 +20,8 @@ export function configFor(home: string, env: Record<string, string> = {}): Confi
 export interface TestCtx extends Ctx {
   errors: string[]
   probes: number
+  /** Total ms `record` asked to sleep while waiting for the transcript. */
+  slept: number
 }
 
 export function makeCtx(config: Config, now: number, idle: number | null = 0): TestCtx {
@@ -28,6 +30,10 @@ export function makeCtx(config: Config, now: number, idle: number | null = 0): T
     now,
     errors: [],
     probes: 0,
+    slept: 0,
+    sleepMs: (ms) => {
+      ctx.slept += ms
+    },
     idleSeconds: () => {
       ctx.probes++
       return idle

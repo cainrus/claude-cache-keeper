@@ -15,7 +15,7 @@ import { buildHooks, PLUGIN_SCRIPT } from '../src/hooks.ts'
 import { readLedger } from '../src/ledger.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
 import { sessionPath } from '../src/state.ts'
-import { FIXTURES, SID, tempHome, writeTranscript } from './helpers.ts'
+import { SID, tempHome, writeTranscript } from './helpers.ts'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const hooksJson = JSON.parse(readFileSync(join(ROOT, 'hooks/hooks.json'), 'utf8'))
@@ -87,8 +87,10 @@ test('e2e: record -> wait+wake pings -> wake turn scored -> human returns -> rep
   assert.equal(wakePrompt.status, 0)
   assert.equal(wakePrompt.stdout, '', 'UserPromptSubmit stdout would be injected into the context')
 
-  // The Stop closing the wake turn: scored as a hit from the fixture's usage.
-  const closing = run(command('Stop', 0), { ...stop, transcript_path: join(FIXTURES, 'wake-hit.jsonl'), stop_hook_active: true }, env)
+  // The Stop closing the wake turn: scored as a hit from the wake turn's own
+  // entry, which is necessarily newer than the ping that caused it.
+  const wakeTurn = writeTranscript(home, [{ at: Date.now(), read: 90_400, write: 900 }], 'wake-turn.jsonl')
+  const closing = run(command('Stop', 0), { ...stop, transcript_path: wakeTurn, stop_hook_active: true }, env)
   assert.equal(closing.status, 0)
 
   const human = run(command('UserPromptSubmit'), { session_id: SID, prompt: 'continue' }, env)

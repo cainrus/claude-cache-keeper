@@ -1,11 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { appendFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { end, isWakePrompt, record, touch, wake, WAKE_MESSAGE } from '../src/commands.ts'
+import { end, isWakePrompt, record, touch, TRANSCRIPT_CATCH_UP_MS, wake, WAKE_MESSAGE } from '../src/commands.ts'
 import { readLedger } from '../src/ledger.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
 import { loadAwayBudget, loadSession, newSession, saveAwayBudget, saveSession } from '../src/state.ts'
-import { configFor, FIXTURES, makeCtx, MIN, SID, tempHome, writeTranscript } from './helpers.ts'
+import { assistantLine, configFor, FIXTURES, makeCtx, MIN, SID, tempHome, writeTranscript } from './helpers.ts'
 
 const T0 = Date.parse('2026-01-01T10:00:00.000Z')
 const BIG = { read: 90_000, write: 1_000 }
@@ -37,6 +38,42 @@ test('record: an entry older than the last prompt means the transcript lags — 
   const transcript = writeTranscript(home, [{ at: T0, ...BIG }])
   record({ session_id: SID, transcript_path: transcript }, makeCtx(config, T0 + 11 * MIN))
   assert.equal(loadSession(home, SID)!.lastTurnEndAt, T0 + 11 * MIN)
+})
+
+// Seen live: the Stop closing the second wake ran before the wake's assistant
+// entry reached the disk, and the previous wake's usage was scored in its place.
+test('record: waits for the wake turn to reach the transcript instead of scoring the previous one', () => {
+  const home = tempHome()
+  const config = configFor(home)
+  const pingAt = T0 + 50 * MIN
+  saveSession(home, { ...newSession(SID), pendingPing: true, lastPingAt: pingAt })
+  const transcript = writeTranscript(home, [{ at: T0, read: 57_225, write: 889 }])
+  const ctx = makeCtx(config, pingAt + 3_000)
+  ctx.sleepMs = (ms) => {
+    ctx.slept += ms
+    appendFileSync(transcript, `${assistantLine({ at: pingAt + 1_500, read: 58_114, write: 765 })}\n`)
+  }
+  record({ session_id: SID, transcript_path: transcript }, ctx)
+  const hit = readLedger(home).find((e) => e.event === 'wake-hit')
+  assert.ok(hit)
+  assert.equal(hit.cacheRead, 58_114)
+  assert.equal(hit.cacheWrite, 765)
+  assert.equal(loadSession(home, SID)!.lastTurnEndAt, pingAt + 1_500)
+})
+
+test('record: a wake turn that never reaches the transcript is left unscored', () => {
+  const home = tempHome()
+  const config = configFor(home)
+  const pingAt = T0 + 50 * MIN
+  saveSession(home, { ...newSession(SID), pendingPing: true, lastPingAt: pingAt })
+  const transcript = writeTranscript(home, [{ at: T0, read: 57_225, write: 889 }])
+  const ctx = makeCtx(config, pingAt + 3_000)
+  record({ session_id: SID, transcript_path: transcript }, ctx)
+  assert.equal(ctx.slept, TRANSCRIPT_CATCH_UP_MS)
+  assert.deepEqual(readLedger(home).filter((e) => String(e.event).startsWith('wake-')), [])
+  const s = loadSession(home, SID)!
+  assert.equal(s.pendingPing, false)
+  assert.equal(s.lastPingHit, null)
 })
 
 test('record: without a transcript it still stamps the turn', () => {

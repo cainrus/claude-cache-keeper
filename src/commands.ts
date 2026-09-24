@@ -40,6 +40,32 @@ export interface Ctx {
   /** Keyboard idle seconds, null = unknown. Called at most once per wake. */
   idleSeconds: () => number | null
   stderr: (text: string) => void
+  /** Blocking sleep, injectable for tests. Defaults to Atomics.wait. */
+  sleepMs?: (ms: number) => void
+}
+
+const blockingSleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+/** How long `record` waits for the transcript to catch up with the turn it closes. */
+export const TRANSCRIPT_CATCH_UP_MS = 3000
+const CATCH_UP_STEP_MS = 100
+
+/**
+ * The Stop hook can run before Claude Code has flushed the assistant entry of
+ * the turn it closes (seen live: the entry's timestamp predates the hook, the
+ * line is not on disk yet). Reading then returns the PREVIOUS turn's usage —
+ * for a wake, the previous wake's numbers. So poll until an entry at least as
+ * new as the prompt that started this turn shows up; undefined when it never
+ * does, so the caller can record "not scored" instead of stale numbers.
+ */
+function usageSince(path: string, sinceMs: number, ctx: Ctx) {
+  const sleep = ctx.sleepMs ?? blockingSleep
+  for (let waited = 0; ; waited += CATCH_UP_STEP_MS) {
+    const usage = lastMainUsage(path)
+    if (usage && (usage.timestamp === undefined || usage.timestamp >= sinceMs)) return usage
+    if (waited >= TRANSCRIPT_CATCH_UP_MS) return undefined
+    sleep(CATCH_UP_STEP_MS)
+  }
 }
 
 const iso = (ms: number) => new Date(ms).toISOString()
@@ -57,7 +83,10 @@ export function record(input: HookInput, ctx: Ctx): number {
   const state = loadSession(home, sid) ?? newSession(sid)
   if (input.transcript_path) state.transcriptPath = input.transcript_path
 
-  const usage = state.transcriptPath ? lastMainUsage(state.transcriptPath) : undefined
+  // The turn this Stop closes began at our wake (pendingPing) or at the last
+  // real prompt; its assistant entry cannot be older than that.
+  const turnBegan = state.pendingPing ? (state.lastPingAt ?? 0) : (state.lastHumanAt ?? 0)
+  const usage = state.transcriptPath ? usageSince(state.transcriptPath, turnBegan, ctx) : undefined
 
   // The cache was last touched by the request that produced the last assistant
   // entry, so its timestamp — not this hook's clock — is when the TTL restarted.
