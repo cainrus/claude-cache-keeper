@@ -1,0 +1,42 @@
+{
+  "name": "claude-cache-keeper",
+  "version": "0.1.0",
+  "description": "Keeps an idle Claude Code session's prompt cache warm with a Stop hook — only while someone is plausibly coming back.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Sergei Tarassov <cainrus@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cainrus/claude-cache-keeper.git"
+  },
+  "homepage": "https://github.com/cainrus/claude-cache-keeper#readme",
+  "bugs": "https://github.com/cainrus/claude-cache-keeper/issues",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "cache-keeper": "bin/cache-keeper.ts"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "hooks/",
+    ".claude-plugin/",
+    "docs/",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "node --test 'test/*.test.ts'"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "hooks",
+    "plugin",
+    "prompt-cache",
+    "prompt-caching",
+    "keep-alive",
+    "anthropic",
+    "llm-cost"
+  ]
+}
