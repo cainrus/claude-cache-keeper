@@ -41,7 +41,7 @@ test('a torn last line is ignored', () => {
   assert.equal(lastMainUsage(p)?.cacheRead, 1)
 })
 
-test('usageFromLine tolerates missing fields', () => {
+test('usageFromLine: missing fields default to zero', () => {
   const u = usageFromLine(JSON.stringify({ type: 'assistant', message: { usage: { output_tokens: 3 } } }))
   assert.deepEqual(u, { inputTokens: 0, cacheRead: 0, cacheWrite: 0, outputTokens: 3, ctxTokens: 0 })
   assert.equal(usageFromLine('not json "usage"'), undefined)
