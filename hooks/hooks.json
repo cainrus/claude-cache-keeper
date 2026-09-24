@@ -1,0 +1,43 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}/bin/cache-keeper.ts\" record",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "[ \"$CLAUDE_CODE_ENTRYPOINT\" = sdk-cli ] || { sleep \"${CACHE_KEEPER_DELAY_SEC:-3000}\"; node --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}/bin/cache-keeper.ts\" wake; }",
+            "asyncRewake": true,
+            "timeout": 7200
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}/bin/cache-keeper.ts\" touch",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}/bin/cache-keeper.ts\" end",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

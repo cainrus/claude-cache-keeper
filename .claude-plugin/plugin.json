@@ -1,0 +1,14 @@
+{
+  "name": "cache-keeper",
+  "version": "0.1.0",
+  "description": "Keeps the prompt cache of an idle Claude Code session warm, only while someone is plausibly coming back. Pure hooks: no proxy, no MCP server, no dependencies.",
+  "author": {
+    "name": "Sergei Tarassov",
+    "email": "cainrus@gmail.com",
+    "url": "https://github.com/cainrus"
+  },
+  "homepage": "https://github.com/cainrus/claude-cache-keeper",
+  "repository": "https://github.com/cainrus/claude-cache-keeper",
+  "license": "Apache-2.0",
+  "keywords": ["prompt-cache", "keep-alive", "hooks", "cost"]
+}
