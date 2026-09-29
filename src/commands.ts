@@ -21,6 +21,7 @@ import {
   saveSession,
 } from './state.ts'
 import { lastMainUsage } from './transcript.ts'
+import type { SessionFacts } from './veto.ts'
 
 export const WAKE_MARKER = '[cache-keeper] Prompt-cache keep-alive.'
 export const WAKE_MESSAGE = `${WAKE_MARKER} Reply with exactly "ok". No tools, no commentary.`
@@ -42,6 +43,8 @@ export interface Ctx {
   stderr: (text: string) => void
   /** Blocking sleep, injectable for tests. Defaults to Atomics.wait. */
   sleepMs?: (ms: number) => void
+  /** The `skipIf` veto; asked only when the policy would ping. true = skip. */
+  skipIf?: (facts: SessionFacts) => boolean
 }
 
 const blockingSleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -167,6 +170,11 @@ export function wake(input: HookInput, ctx: Ctx): number {
   const base = { t: iso(ctx.now), sessionId: sid, ctxTokens: state.ctxTokens, ageSec, model: state.model, awaySeconds }
   if (!decision.ping) {
     appendLedger(home, { ...base, event: 'skip', reason: decision.reason })
+    return 0
+  }
+  // Last, so the command runs only for a ping that would really go out.
+  if (ctx.skipIf?.({ sessionId: sid, transcriptPath: state.transcriptPath, lastPromptAt: state.lastHumanAt })) {
+    appendLedger(home, { ...base, event: 'skip', reason: 'skip-if' })
     return 0
   }
 

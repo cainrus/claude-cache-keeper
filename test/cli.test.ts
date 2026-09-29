@@ -7,7 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WAKE_MESSAGE } from '../src/commands.ts'
@@ -117,6 +117,16 @@ test('e2e: a refusal exits 0 and says nothing to the model', () => {
   assert.equal(w.status, 0)
   assert.equal(w.stderr, '')
   assert.equal(readLedger(home)[0].reason, 'away')
+})
+
+test('e2e: skipIf from config.json vetoes a due ping and sees the session id', () => {
+  const { home, env, stop } = fresh()
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ skipIf: `[ "$CACHE_KEEPER_SESSION_ID" = ${SID} ]` }))
+  run(command('Stop', 0), stop, env)
+  const w = run(command('Stop', 1), stop, env)
+  assert.equal(w.status, 0)
+  assert.equal(w.stderr, '')
+  assert.equal(readLedger(home)[0].reason, 'skip-if')
 })
 
 test('e2e: a stale sleeper exits 0 without a ledger line', () => {

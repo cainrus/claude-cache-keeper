@@ -12,6 +12,7 @@ import { buildHooks, shellQuote, waitCommand } from '../src/hooks.ts'
 import { readLedger } from '../src/ledger.ts'
 import { readIdleSeconds } from '../src/presence.ts'
 import { formatReport, summarize } from '../src/report.ts'
+import { runSkipIf } from '../src/veto.ts'
 
 const VERSION = '0.1.0'
 
@@ -67,11 +68,14 @@ function main(argv: string[]): number {
   if (hook) {
     // A hook must never break the session it runs in: any failure is exit 0.
     try {
+      const config = loadConfig()
+      const { skipIf } = config
       const ctx: Ctx = {
-        config: loadConfig(),
+        config,
         now: Date.now(),
         idleSeconds: () => readIdleSeconds(),
         stderr: (text) => process.stderr.write(text),
+        ...(skipIf ? { skipIf: (facts) => runSkipIf(skipIf, facts) } : {}),
       }
       return hook(parseInput(readStdin()), ctx)
     } catch (err) {

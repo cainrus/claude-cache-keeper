@@ -7,16 +7,20 @@
 
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { SkipReason } from './policy.ts'
+import { SKIP_REASONS, type SkipReason } from './policy.ts'
 
-export type LedgerEvent = 'ping' | 'skip' | 'resume' | 'wake-hit' | 'wake-miss'
+/** The policy's reasons, then the external `skipIf` veto (see veto.ts). */
+export const REFUSAL_REASONS = [...SKIP_REASONS, 'skip-if'] as const
+export type RefusalReason = SkipReason | 'skip-if'
+
+export type LedgerEvent ='ping' | 'skip' | 'resume' | 'wake-hit' | 'wake-miss'
 
 export interface LedgerEntry {
   /** ISO timestamp. */
   t: string
   sessionId: string
   event: LedgerEvent
-  reason?: SkipReason
+  reason?: RefusalReason
   ctxTokens?: number
   ageSec?: number
   model?: string

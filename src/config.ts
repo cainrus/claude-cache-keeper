@@ -31,6 +31,8 @@ export interface Config {
   /** Delay of the waiter; only informative here — the shell reads the env var itself. */
   delaySec: number
   prices: PriceTable
+  /** Shell command asked before each ping; exit 0 skips it (see veto.ts). */
+  skipIf?: string
 }
 
 export const DEFAULT_DELAY_SEC = 3000
@@ -65,6 +67,10 @@ function bool(v: unknown): boolean | undefined {
     if (['0', 'false', 'no', 'off'].includes(s)) return false
   }
   return undefined
+}
+
+function str(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() !== '' ? v : undefined
 }
 
 function readConfigFile(home: string): Record<string, unknown> {
@@ -104,5 +110,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     cacheTtlSec: num(file.cacheTtlSec) ?? 3600,
     delaySec: num(env.CACHE_KEEPER_DELAY_SEC) ?? DEFAULT_DELAY_SEC,
     prices,
+    skipIf: str(env.CACHE_KEEPER_SKIP_IF) ?? str(file.skipIf),
   }
 }

@@ -65,7 +65,14 @@ Claude Code 2.1.281, background session (`claude --bg`), hook declared in `.clau
 | 5 | cache younger than `minAgeSec` | `cache-still-warm` | 50 min |
 | 6 | `maxPings` already spent in this idle stretch | `budget-spent` | 4 |
 | 7 | the previous ping missed the cache | `oracle-miss` | — |
+| 8 | the `skipIf` command exits 0 | `skip-if` | not set |
 
+- **`skipIf`** is the hook for knowledge the keeper does not have: that a session's task is finished, handed off or
+  not worth coming back to. It runs through `/bin/sh` only for a ping that passed every other row, with
+  `CACHE_KEEPER_SESSION_ID`, `CACHE_KEEPER_TRANSCRIPT_PATH` and `CACHE_KEEPER_LAST_PROMPT_AT` (ISO, empty when
+  unknown) in its environment. Only exit 0 skips; a failing, missing or slow (> 5 s) command lets the ping out, so a
+  broken probe falls back to the keeper's own behaviour. Compare `LAST_PROMPT_AT` with your own "done" timestamp to
+  let a session be kept again once someone writes to it after the fact.
 - **Presence** is macOS `HIDIdleTime`, which keeps counting through a closed lid or a locked screen. Elsewhere, or
   when the probe fails, presence is *unknown*: the `away` gate lets it through, but the away budget treats it as
   "not at the keyboard", so a broken probe can never lift the only machine-wide cap.
@@ -118,6 +125,7 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | `maxPings` | `CACHE_KEEPER_MAX_PINGS` | `4` | pings per idle stretch |
 | `hitRatio` | `CACHE_KEEPER_HIT_RATIO` | `0.9` | wake turn counts as a hit at `read / (read + write) ≥` this |
 | `prices` | — | opus 5, sonnet 3, haiku 1 | USD per million base input tokens, for `report` |
+| `skipIf` | `CACHE_KEEPER_SKIP_IF` | — | shell command asked before each ping; exit 0 skips it (see [How it decides](#how-it-decides)) |
 | — | `CACHE_KEEPER_IDLE_SEC` | — | override the presence probe (a number of seconds, or `unknown`) |
 
 The defaults assume the 1-hour TTL of a subscription. On an API key the TTL is 5 minutes unless configured

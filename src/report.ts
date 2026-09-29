@@ -8,8 +8,7 @@
  */
 
 import type { Config, PriceTable } from './config.ts'
-import type { LedgerEntry } from './ledger.ts'
-import { SKIP_REASONS, type SkipReason } from './policy.ts'
+import { type LedgerEntry, REFUSAL_REASONS, type RefusalReason } from './ledger.ts'
 
 /** Multipliers of the base input price. */
 export const MULT = {
@@ -35,7 +34,7 @@ export interface Summary {
   savedRewrites: number
   /** Idle stretches that had >= 1 ping and no real prompt afterwards (yet). */
   abandoned: number
-  refusals: Partial<Record<SkipReason, number>>
+  refusals: Partial<Record<RefusalReason, number>>
   refusalsTotal: number
   savedUsd: number
   pingCostUsd: number
@@ -145,7 +144,7 @@ export function formatReport(s: Summary): string {
     row('abandoned', s.abandoned),
     '',
     `refusals${' '.repeat(16)}${String(s.refusalsTotal).padStart(10)}`,
-    ...SKIP_REASONS.filter((r) => s.refusals[r]).map((r) => row(r, s.refusals[r] as number)),
+    ...REFUSAL_REASONS.filter((r) => s.refusals[r]).map((r) => row(r, s.refusals[r] as number)),
     '',
     'estimate at API list prices',
     row('rewrites avoided', usd(s.savedUsd)),

@@ -186,6 +186,45 @@ test('wake: a refusal is logged with its reason and exits 0', () => {
 
 // --- away budget -------------------------------------------------------------
 
+test('wake: a skipIf veto refuses the ping without spending any budget', () => {
+  const { home, config, transcript } = setup()
+  const ctx = makeCtx(config, T0 + WARM_ENOUGH, 30)
+  const seen: unknown[] = []
+  ctx.skipIf = (facts) => {
+    seen.push(facts)
+    return true
+  }
+  assert.equal(wake({ session_id: SID }, ctx), 0)
+  assert.deepEqual(ctx.errors, [])
+  assert.deepEqual(seen, [{ sessionId: SID, transcriptPath: transcript, lastPromptAt: undefined }])
+  const s = loadSession(home, SID)!
+  assert.equal(s.pingsSoFar, 0)
+  assert.equal(s.pendingPing, false)
+  const [line] = readLedger(home)
+  assert.equal(line.event, 'skip')
+  assert.equal(line.reason, 'skip-if')
+})
+
+test('wake: skipIf answering no lets the ping through', () => {
+  const { config } = setup()
+  const ctx = makeCtx(config, T0 + WARM_ENOUGH, 30)
+  ctx.skipIf = () => false
+  assert.equal(wake({ session_id: SID }, ctx), 2)
+})
+
+test('wake: skipIf is asked only when the policy would ping', () => {
+  const { home, config } = setup()
+  let asked = 0
+  const ctx = makeCtx(config, T0 + WARM_ENOUGH, T.awaySec + 1)
+  ctx.skipIf = () => {
+    asked++
+    return true
+  }
+  assert.equal(wake({ session_id: SID }, ctx), 0)
+  assert.equal(asked, 0)
+  assert.equal(readLedger(home)[0].reason, 'away')
+})
+
 test('away budget: a ping while away spends it, a ping at the keyboard does not', () => {
   const away = setup()
   wake({ session_id: SID }, makeCtx(away.config, T0 + WARM_ENOUGH, T.presenceSec + 1))
