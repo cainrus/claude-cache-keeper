@@ -10,7 +10,9 @@
  */
 
 import type { Config } from './config.ts'
+import { handoffMessage, postCheck, requestHandoff, wantsHandoff } from './handoff.ts'
 import { appendLedger } from './ledger.ts'
+import { takeNotices } from './notices.ts'
 import { decide, isAtKeyboard } from './policy.ts'
 import {
   deleteSession,
@@ -45,6 +47,10 @@ export interface Ctx {
   sleepMs?: (ms: number) => void
   /** The `skipIf` veto; asked only when the policy would ping. true = skip. */
   skipIf?: (facts: SessionFacts) => boolean
+  /** Hook stdout (UserPromptSubmit JSON). */
+  stdout?: (text: string) => void
+  /** Start the handoff apply step for a session, detached from the hook. */
+  startHandoff?: (sessionId: string) => void
 }
 
 const blockingSleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -108,6 +114,8 @@ export function record(input: HookInput, ctx: Ctx): number {
   // Only a Stop that follows our own wake is scored. `stop_hook_active` alone
   // is also set when some other Stop hook blocked the turn; scoring that turn
   // could record a spurious miss and mute this session for good.
+  const closedWake = state.pendingPing
+  if (!closedWake && usage) postCheck(home, sid, usage, ctx.now)
   if (state.pendingPing) {
     state.pendingPing = false
     if (usage) {
@@ -128,7 +136,10 @@ export function record(input: HookInput, ctx: Ctx): number {
     }
   }
 
+  const handoff = closedWake && state.handoffPending === true
+  state.handoffPending = false
   saveSession(home, state)
+  if (handoff) ctx.startHandoff?.(sid)
   return 0
 }
 
@@ -168,12 +179,37 @@ export function wake(input: HookInput, ctx: Ctx): number {
   )
 
   const base = { t: iso(ctx.now), sessionId: sid, ctxTokens: state.ctxTokens, ageSec, model: state.model, awaySeconds }
+  const facts = { sessionId: sid, transcriptPath: state.transcriptPath, lastPromptAt: state.lastHumanAt }
   if (!decision.ping) {
+    // The keeper is letting a warm cache go: spend its last warm turn on a summary instead.
+    const handoff =
+      state.transcriptPath !== undefined &&
+      wantsHandoff(
+        {
+          reason: decision.reason,
+          ageSec,
+          ctxTokens: state.ctxTokens,
+          lastPingHit: state.lastPingHit,
+          alreadyRequested: state.handoffRequested === true,
+        },
+        ctx.config,
+      ) &&
+      !ctx.skipIf?.(facts)
+    if (handoff) {
+      const path = requestHandoff(home, sid, state.ctxTokens, state.transcriptPath!, ctx.now)
+      state.pendingPing = true
+      state.handoffRequested = true
+      state.handoffPending = true
+      state.lastPingAt = ctx.now
+      saveSession(home, state)
+      ctx.stderr(`${handoffMessage(WAKE_MARKER, path)}\n`)
+      return 2
+    }
     appendLedger(home, { ...base, event: 'skip', reason: decision.reason })
     return 0
   }
   // Last, so the command runs only for a ping that would really go out.
-  if (ctx.skipIf?.({ sessionId: sid, transcriptPath: state.transcriptPath, lastPromptAt: state.lastHumanAt })) {
+  if (ctx.skipIf?.(facts)) {
     appendLedger(home, { ...base, event: 'skip', reason: 'skip-if' })
     return 0
   }
@@ -215,8 +251,18 @@ export function touch(input: HookInput, ctx: Ctx): number {
 
   state.pingsSoFar = 0
   state.pendingPing = false
+  state.handoffRequested = false
+  state.handoffPending = false
   state.lastHumanAt = ctx.now
   saveSession(home, state)
+
+  const notes = takeNotices(home, sid, ctx.now)
+  if (notes.length > 0) {
+    const text = notes.join('\n')
+    ctx.stdout?.(
+      `${JSON.stringify({ systemMessage: text, hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } })}\n`,
+    )
+  }
   return 0
 }
 

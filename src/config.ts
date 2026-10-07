@@ -33,6 +33,24 @@ export interface Config {
   prices: PriceTable
   /** Shell command asked before each ping; exit 0 skips it (see veto.ts). */
   skipIf?: string
+  handoff: HandoffConfig
+}
+
+/** See handoff.ts. Off unless switched on: it rewrites the session transcript. */
+export interface HandoffConfig {
+  enabled: boolean
+  /** Below this the summary would not save enough to pay for itself. */
+  minCtxTokens: number
+  /**
+   * Restarts the live session so it reloads the shortened transcript; gets
+   * CACHE_KEEPER_SESSION_ID. Without it there is no handoff: the running
+   * process would keep the whole context in memory.
+   */
+  restartCommand?: string
+  /** `claude` binary used to verify the shortened transcript on a copy. */
+  claudeBin: string
+  /** Model of that verification run; a cheap one is enough. */
+  verifyModel: string
 }
 
 export const DEFAULT_DELAY_SEC = 3000
@@ -111,5 +129,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     delaySec: num(env.CACHE_KEEPER_DELAY_SEC) ?? DEFAULT_DELAY_SEC,
     prices,
     skipIf: str(env.CACHE_KEEPER_SKIP_IF) ?? str(file.skipIf),
+    handoff: loadHandoff(env, file.handoff),
+  }
+}
+
+function loadHandoff(env: NodeJS.ProcessEnv, raw: unknown): HandoffConfig {
+  const f = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  return {
+    enabled: bool(env.CACHE_KEEPER_HANDOFF) ?? bool(f.enabled) ?? false,
+    minCtxTokens: num(env.CACHE_KEEPER_HANDOFF_MIN_CTX_TOKENS) ?? num(f.minCtxTokens) ?? 120_000,
+    restartCommand: str(env.CACHE_KEEPER_HANDOFF_RESTART) ?? str(f.restartCommand),
+    claudeBin: str(f.claudeBin) ?? 'claude',
+    verifyModel: str(f.verifyModel) ?? 'haiku',
   }
 }

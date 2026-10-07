@@ -29,6 +29,10 @@ export interface SessionState {
   /** A wake was sent and its closing Stop has not been recorded yet. */
   pendingPing: boolean
   lastPingHit: boolean | null
+  /** A handoff was asked for in this idle stretch (reset by a real prompt). */
+  handoffRequested?: boolean
+  /** The open wake is a handoff: its closing Stop starts the apply step. */
+  handoffPending?: boolean
 }
 
 export interface AwayBudget {

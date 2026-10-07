@@ -13,7 +13,16 @@ import { SKIP_REASONS, type SkipReason } from './policy.ts'
 export const REFUSAL_REASONS = [...SKIP_REASONS, 'skip-if'] as const
 export type RefusalReason = SkipReason | 'skip-if'
 
-export type LedgerEvent ='ping' | 'skip' | 'resume' | 'wake-hit' | 'wake-miss'
+export type LedgerEvent =
+  | 'ping'
+  | 'skip'
+  | 'resume'
+  | 'wake-hit'
+  | 'wake-miss'
+  | 'handoff-request'
+  | 'handoff'
+  | 'handoff-failed'
+  | 'handoff-checked'
 
 export interface LedgerEntry {
   /** ISO timestamp. */
@@ -35,6 +44,11 @@ export interface LedgerEntry {
   outputTokens?: number
   /** ping / skip: keyboard idle seconds (null = unknown). */
   awaySeconds?: number | null
+  /** handoff: context of the verification run on the shortened copy. */
+  verifyCtx?: number
+  /** handoff-failed: which step refused (see handoff.ts). */
+  failure?: string
+  detail?: string
 }
 
 export function ledgerPath(home: string): string {
