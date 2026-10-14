@@ -127,9 +127,42 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | `prices` | — | opus 5, sonnet 3, haiku 1 | USD per million base input tokens, for `report` |
 | `skipIf` | `CACHE_KEEPER_SKIP_IF` | — | shell command asked before each ping; exit 0 skips it (see [How it decides](#how-it-decides)) |
 | — | `CACHE_KEEPER_IDLE_SEC` | — | override the presence probe (a number of seconds, or `unknown`) |
+| `handoff.enabled` | `CACHE_KEEPER_HANDOFF` | `false` | hand a session off to a summary instead of letting its cache die (see [Handoff](#handoff)) |
+| `handoff.minCtxTokens` | `CACHE_KEEPER_HANDOFF_MIN_CTX_TOKENS` | `120000` | smallest context worth a handoff |
+| `handoff.restartCommand` | `CACHE_KEEPER_HANDOFF_RESTART` | — | restarts the live session; gets `CACHE_KEEPER_SESSION_ID`. Required for a handoff |
+| `handoff.claudeBin` | — | `claude` | binary for the verification run |
+| `handoff.verifyModel` | — | `haiku` | model of the verification run |
 
 The defaults assume the 1-hour TTL of a subscription. On an API key the TTL is 5 minutes unless configured
 otherwise; the first ping will then miss and the oracle will mute the session, which is safe but useless.
+
+## Handoff
+
+Opt-in, off by default: it rewrites the session transcript.
+
+When the keeper stops holding a large session for good (`away`, `away-budget-spent`, `budget-spent`), the cache is
+still warm, but the next real prompt would pay a full rewrite of the whole context. With handoff on, the keeper
+spends that last warm turn asking the model for a handoff summary. A detached `cache-keeper handoff-apply` step then
+appends a `compact_boundary` record and the summary to the transcript — the two records `/compact` writes — and runs
+`restartCommand`, so the session reloads only the summary and keeps its id.
+
+It fails closed, in this order:
+
+1. no summary on disk — nothing is touched;
+2. the shortened transcript is first resumed on a throwaway copy with a cheap headless `claude --resume`: the summary
+   must be visible and a canary placed before the boundary must not — otherwise nothing is touched and handoff
+   switches itself off (the CLI no longer honours the format);
+3. the transcript changed meanwhile (someone came back) — nothing is touched;
+4. append, then restart — a failed restart truncates the transcript back to its old size;
+5. the first real turn afterwards must show a context at most 70% of the old one — otherwise handoff switches itself
+   off.
+
+Every outcome except 3 leaves a one-shot notice that each session shows once on its next prompt. After a
+self-disable, `cache-keeper handoff-enable` switches it back on. The pre-handoff transcript is kept under
+`$CACHE_KEEPER_HOME/handoffs/`.
+
+Measured on Claude Code 2.1.292: a 98k-context transcript resumed with the synthetic boundary at 54k (205k without),
+and saw the summary. The format of those records is internal to Claude Code; step 2 exists because it can change.
 
 ## Report
 

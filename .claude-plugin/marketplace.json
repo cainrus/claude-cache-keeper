@@ -12,7 +12,7 @@
       "name": "cache-keeper",
       "source": "./",
       "description": "Keeps the prompt cache of an idle session warm via a Stop hook with asyncRewake, gated by presence, cache age and per-session and machine-wide budgets.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "productivity",
       "keywords": ["prompt-cache", "keep-alive", "hooks", "cost"]
     }
