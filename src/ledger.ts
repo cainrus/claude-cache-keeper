@@ -20,9 +20,10 @@ export type LedgerEvent =
   | 'wake-hit'
   | 'wake-miss'
   | 'handoff-request'
-  | 'handoff'
+  | 'handoff-ready'
+  | 'handoff-here'
+  | 'handoff-new'
   | 'handoff-failed'
-  | 'handoff-checked'
 
 export interface LedgerEntry {
   /** ISO timestamp. */
@@ -44,9 +45,7 @@ export interface LedgerEntry {
   outputTokens?: number
   /** ping / skip: keyboard idle seconds (null = unknown). */
   awaySeconds?: number | null
-  /** handoff: context of the verification run on the shortened copy. */
-  verifyCtx?: number
-  /** handoff-failed: which step refused (see handoff.ts). */
+  /** handoff-failed: which step refused (no-brief, spawn). */
   failure?: string
   detail?: string
 }

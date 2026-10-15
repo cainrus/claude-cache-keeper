@@ -8,30 +8,28 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { end, record, touch, wake, type Ctx, type HookInput } from '../src/commands.ts'
 import { loadConfig } from '../src/config.ts'
-import { applyHandoff, enableHandoff } from '../src/handoff.ts'
-import { realDeps, spawnApply } from '../src/handoff-run.ts'
+import { realIO } from '../src/handoff-run.ts'
 import { buildHooks, shellQuote, waitCommand } from '../src/hooks.ts'
 import { readLedger } from '../src/ledger.ts'
 import { readIdleSeconds } from '../src/presence.ts'
 import { formatReport, summarize } from '../src/report.ts'
 import { runSkipIf } from '../src/veto.ts'
 
-const VERSION = '0.1.0'
+const VERSION = '0.3.0'
 
 const USAGE = `cache-keeper ${VERSION} — keep an idle Claude Code session's prompt cache warm
 
 Hook subcommands (read the hook input JSON on stdin):
   record            Stop, sync: note the finished turn, score a wake turn
   wake              Stop, after the sleep (asyncRewake): exit 2 = ping, 0 = no ping
-  touch             UserPromptSubmit: a real prompt closes the idle stretch
+  touch             UserPromptSubmit: a real prompt closes the idle stretch;
+                    into a cold cache with a handoff brief, it asks first
   end               SessionEnd: forget the session
 
 Other:
   report [--json]   summarise the decision ledger
   install-snippet   print a settings.json "hooks" block for use without the plugin
   wait-cmd          print the shell command of the waiting Stop hook
-  handoff-apply SID apply a requested handoff (started detached by record)
-  handoff-enable    switch handoff back on after it switched itself off
   --help, --version
 
 State lives in $CACHE_KEEPER_HOME (default ~/.claude-cache-keeper).
@@ -80,7 +78,7 @@ function main(argv: string[]): number {
         idleSeconds: () => readIdleSeconds(),
         stderr: (text) => process.stderr.write(text),
         stdout: (text) => process.stdout.write(text),
-        startHandoff: (sid) => spawnApply(fileURLToPath(import.meta.url), sid),
+        handoffIO: realIO(config),
         ...(skipIf ? { skipIf: (facts) => runSkipIf(skipIf, facts) } : {}),
       }
       return hook(parseInput(readStdin()), ctx)
@@ -104,19 +102,6 @@ function main(argv: string[]): number {
       return 0
     case 'wait-cmd':
       process.stdout.write(`${waitCommand(script)}\n`)
-      return 0
-    case 'handoff-apply': {
-      const [sid] = rest
-      if (!sid) {
-        process.stderr.write('cache-keeper handoff-apply: session id required\n')
-        return 64
-      }
-      const r = applyHandoff(sid, realDeps(loadConfig()))
-      process.stdout.write(`${JSON.stringify(r)}\n`)
-      return r.ok ? 0 : 1
-    }
-    case 'handoff-enable':
-      enableHandoff(loadConfig().home)
       return 0
     default:
       process.stderr.write(`cache-keeper: unknown command "${cmd}"\n\n${USAGE}\n`)

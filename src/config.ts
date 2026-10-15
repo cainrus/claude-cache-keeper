@@ -36,21 +36,24 @@ export interface Config {
   handoff: HandoffConfig
 }
 
-/** See handoff.ts. Off unless switched on: it rewrites the session transcript. */
+/** See handoff.ts. Off unless switched on: it costs one extra turn per idle stretch. */
 export interface HandoffConfig {
   enabled: boolean
-  /** Below this the summary would not save enough to pay for itself. */
+  /** Below this the brief would not save enough to pay for itself. */
   minCtxTokens: number
   /**
-   * Restarts the live session so it reloads the shortened transcript; gets
-   * CACHE_KEEPER_SESSION_ID. Without it there is no handoff: the running
-   * process would keep the whole context in memory.
+   * Starts a new session from the brief (menu choice 2). Gets CACHE_KEEPER_BRIEF,
+   * CACHE_KEEPER_SESSION_ID, CACHE_KEEPER_TRANSCRIPT_PATH, CACHE_KEEPER_CWD;
+   * its output is shown to the human. Without it choice 2 only writes the file.
    */
-  restartCommand?: string
-  /** `claude` binary used to verify the shortened transcript on a copy. */
-  claudeBin: string
-  /** Model of that verification run; a cheap one is enough. */
-  verifyModel: string
+  spawnCommand?: string
+  /** Close the old session after a successful spawn. */
+  closeAfterSpawn: boolean
+  /**
+   * Closes the old session; gets CACHE_KEEPER_SESSION_ID and CACHE_KEEPER_CLAUDE_PID.
+   * Default: SIGTERM to the session's `claude` process.
+   */
+  closeCommand?: string
 }
 
 export const DEFAULT_DELAY_SEC = 3000
@@ -138,8 +141,8 @@ function loadHandoff(env: NodeJS.ProcessEnv, raw: unknown): HandoffConfig {
   return {
     enabled: bool(env.CACHE_KEEPER_HANDOFF) ?? bool(f.enabled) ?? false,
     minCtxTokens: num(env.CACHE_KEEPER_HANDOFF_MIN_CTX_TOKENS) ?? num(f.minCtxTokens) ?? 120_000,
-    restartCommand: str(env.CACHE_KEEPER_HANDOFF_RESTART) ?? str(f.restartCommand),
-    claudeBin: str(f.claudeBin) ?? 'claude',
-    verifyModel: str(f.verifyModel) ?? 'haiku',
+    spawnCommand: str(env.CACHE_KEEPER_HANDOFF_SPAWN) ?? str(f.spawnCommand),
+    closeAfterSpawn: bool(env.CACHE_KEEPER_HANDOFF_CLOSE) ?? bool(f.closeAfterSpawn) ?? true,
+    closeCommand: str(f.closeCommand),
   }
 }

@@ -23,7 +23,7 @@
           {
             "type": "command",
             "command": "node --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}/bin/cache-keeper.ts\" touch",
-            "timeout": 10
+            "timeout": 60
           }
         ]
       }

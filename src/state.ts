@@ -31,7 +31,7 @@ export interface SessionState {
   lastPingHit: boolean | null
   /** A handoff was asked for in this idle stretch (reset by a real prompt). */
   handoffRequested?: boolean
-  /** The open wake is a handoff: its closing Stop starts the apply step. */
+  /** The open wake is a handoff: its closing Stop checks the brief. */
   handoffPending?: boolean
 }
 

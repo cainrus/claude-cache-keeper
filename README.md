@@ -127,42 +127,52 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | `prices` | — | opus 5, sonnet 3, haiku 1 | USD per million base input tokens, for `report` |
 | `skipIf` | `CACHE_KEEPER_SKIP_IF` | — | shell command asked before each ping; exit 0 skips it (see [How it decides](#how-it-decides)) |
 | — | `CACHE_KEEPER_IDLE_SEC` | — | override the presence probe (a number of seconds, or `unknown`) |
-| `handoff.enabled` | `CACHE_KEEPER_HANDOFF` | `false` | hand a session off to a summary instead of letting its cache die (see [Handoff](#handoff)) |
-| `handoff.minCtxTokens` | `CACHE_KEEPER_HANDOFF_MIN_CTX_TOKENS` | `120000` | smallest context worth a handoff |
-| `handoff.restartCommand` | `CACHE_KEEPER_HANDOFF_RESTART` | — | restarts the live session; gets `CACHE_KEEPER_SESSION_ID`. Required for a handoff |
-| `handoff.claudeBin` | — | `claude` | binary for the verification run |
-| `handoff.verifyModel` | — | `haiku` | model of the verification run |
+| `handoff.enabled` | `CACHE_KEEPER_HANDOFF` | `false` | write a brief before the cache dies and ask before a prompt hits it cold (see [Handoff](#handoff)) |
+| `handoff.*` | | | see [Handoff](#handoff) |
 
 The defaults assume the 1-hour TTL of a subscription. On an API key the TTL is 5 minutes unless configured
 otherwise; the first ping will then miss and the oracle will mute the session, which is safe but useless.
 
 ## Handoff
 
-Opt-in, off by default: it rewrites the session transcript.
+Opt-in, off by default.
 
-When the keeper stops holding a large session for good (`away`, `away-budget-spent`, `budget-spent`), the cache is
-still warm, but the next real prompt would pay a full rewrite of the whole context. With handoff on, the keeper
-spends that last warm turn asking the model for a handoff summary. A detached `cache-keeper handoff-apply` step then
-appends a `compact_boundary` record and the summary to the transcript — the two records `/compact` writes — and runs
-`restartCommand`, so the session reloads only the summary and keeps its id.
+When the keeper stops holding a session (`away`, `away-budget-spent`, `budget-spent`) its cache is usually still
+warm. With `handoff` on, it spends that last warm turn asking the model to write a self-contained brief for a new
+session to `$CACHE_KEEPER_HOME/handoffs/<session>.md`. The transcript is not touched.
 
-It fails closed, in this order:
+When you come back after the cache has expired, your first prompt is stopped by the `UserPromptSubmit` hook before
+it reaches the model (no cold rewrite yet) and goes back to the input box, with a menu:
 
-1. no summary on disk — nothing is touched;
-2. the shortened transcript is first resumed on a throwaway copy with a cheap headless `claude --resume`: the summary
-   must be visible and a canary placed before the boundary must not — otherwise nothing is touched and handoff
-   switches itself off (the CLI no longer honours the format);
-3. the transcript changed meanwhile (someone came back) — nothing is touched;
-4. append, then restart — a failed restart truncates the transcript back to its old size;
-5. the first real turn afterwards must show a context at most 70% of the old one — otherwise handoff switches itself
-   off.
+```
+cache-keeper: this session's prompt cache has gone cold (idle 2h 10m); the next turn re-sends ~151k tokens (≈ $1.51).
+A handoff brief was written before it expired: ~/.claude-cache-keeper/handoffs/<session>.md
+  Enter  send the same message again to continue here (or type 1)
+  2      continue in a new session from the brief, with your message; this session closes
+Your message is held and is back in the input box. Nothing was sent to the model.
+```
 
-Every outcome except 3 leaves a one-shot notice that each session shows once on its next prompt. After a
-self-disable, `cache-keeper handoff-enable` switches it back on. The pre-handoff transcript is kept under
-`$CACHE_KEEPER_HOME/handoffs/`.
+- **Enter** (the same text again), `1` or `force`: the prompt goes through and pays the rewrite. With `1` the held
+  message is passed to the model as context.
+- **`2`**: the brief plus your held message are written to `handoffs/<session>-continue.md` and `spawnCommand` is
+  run with it; its output (say, the new session's id) is shown. On exit 0 this session is closed two seconds later.
+  Without `spawnCommand`, only the file is written.
+- Anything else replaces the held message and shows the menu again.
+- Back before the cache expired: nothing is intercepted and the brief is retired.
 
-Measured on Claude Code 2.1.292: a 98k-context transcript resumed with the synthetic boundary at 54k (205k without),
-and saw the summary. The format of those records is internal to Claude Code; step 2 exists because it can change.
+`!` commands and slash commands do not go through `UserPromptSubmit` (Claude Code 2.1.299), so they reach a cold
+cache without the menu.
+
+| `handoff.` key | env | default | meaning |
+|---|---|---|---|
+| `enabled` | `CACHE_KEEPER_HANDOFF` | `false` | switch |
+| `minCtxTokens` | `CACHE_KEEPER_HANDOFF_MIN_CTX_TOKENS` | `120000` | below this a brief saves too little |
+| `spawnCommand` | `CACHE_KEEPER_HANDOFF_SPAWN` | — | shell command starting a new session; gets `CACHE_KEEPER_BRIEF`, `CACHE_KEEPER_SESSION_ID`, `CACHE_KEEPER_TRANSCRIPT_PATH`, `CACHE_KEEPER_CWD`; 45 s at most |
+| `closeAfterSpawn` | `CACHE_KEEPER_HANDOFF_CLOSE` | `true` | close the old session after a successful spawn |
+| `closeCommand` | — | SIGTERM to the session's `claude` | how to close it; gets `CACHE_KEEPER_SESSION_ID`, `CACHE_KEEPER_CLAUDE_PID` |
+
+Example: `"spawnCommand": "claude-new-session --prompt-file \"$CACHE_KEEPER_BRIEF\" --cwd \"$CACHE_KEEPER_CWD\""` —
+any launcher that starts a session in the background and returns.
 
 ## Report
 

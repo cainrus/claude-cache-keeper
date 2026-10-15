@@ -1,20 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { record, touch, wake, WAKE_MARKER } from '../src/commands.ts'
-import {
-  applyHandoff,
-  buildSplice,
-  enableHandoff,
-  isHandoffDisabled,
-  loadRecord,
-  postCheck,
-  requestHandoff,
-  summaryPath,
-  type ApplyDeps,
-  type ClaudeRun,
-} from '../src/handoff.ts'
+import { briefPath, continuePath, loadRecord, requestHandoff, type HandoffIO } from '../src/handoff.ts'
 import { readLedger } from '../src/ledger.ts'
 import { postNotice, takeNotices, NOTICE_TTL_MS } from '../src/notices.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
@@ -23,66 +12,23 @@ import { assistantLine, configFor, makeCtx, MIN, SID, tempHome } from './helpers
 
 const T0 = Date.parse('2026-01-01T10:00:00.000Z')
 const PRE = 150_000
-const SUMMARY = `Goal: ship the handoff POC.\n${'Decisions and state of the work. '.repeat(20)}\nNext step: run the tests.`
-const HANDOFF_ENV = { CACHE_KEEPER_HANDOFF: '1', CACHE_KEEPER_HANDOFF_RESTART: 'true' }
+const BRIEF = `Goal: ship the handoff.\n${'Decisions and state of the work. '.repeat(20)}\nNext step: run the tests.`
+const HANDOFF_ENV = { CACHE_KEEPER_HANDOFF: '1' }
+const SPAWN_ENV = { ...HANDOFF_ENV, CACHE_KEEPER_HANDOFF_SPAWN: 'start-new' }
+const HOUR = 60 * MIN
 
-/** A transcript in a project dir, with uuid-chained records like Claude Code writes. */
+/** A transcript in a project dir, like Claude Code writes. */
 function transcriptIn(home: string, ctx = PRE): string {
   const dir = join(home, 'projects', '-home-user-project')
   mkdirSync(dir, { recursive: true })
   const path = join(dir, `${SID}.jsonl`)
   const lines = [
-    JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, sessionId: SID, cwd: '/home/user/project', version: '2.1.281', message: { role: 'user', content: 'hi' } }),
-    assistantLine({ at: T0, read: ctx - 1000, write: 995 }, { uuid: 'a1', parentUuid: 'u1', version: '2.1.281' }),
+    JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, sessionId: SID, cwd: '/home/user/project', message: { role: 'user', content: 'hi' } }),
+    assistantLine({ at: T0, read: ctx - 1000, write: 995 }, { uuid: 'a1', parentUuid: 'u1' }),
   ]
   writeFileSync(path, `${lines.join('\n')}\n`)
   return path
 }
-
-/**
- * A fake `claude -p --resume`: loads the copy the way Claude Code does — only
- * what follows the last compact_boundary — and answers the verify prompt.
- * `honours: false` plays a CLI that ignores the boundary.
- */
-function fakeClaude(transcriptDir: string, honours = true, calls: string[][] = []) {
-  return (args: string[]): ClaudeRun => {
-    calls.push(args)
-    const id = args[args.indexOf('--resume') + 1]
-    const lines = readFileSync(join(transcriptDir, `${id}.jsonl`), 'utf8').split('\n').filter(Boolean)
-    const cut = lines.findLastIndex((l) => l.includes('"compact_boundary"'))
-    const seen = (honours && cut >= 0 ? lines.slice(cut) : lines).join('\n')
-    const hid = seen.match(/HANDOFF-ID (H-[0-9a-f]+)/)?.[1] ?? 'NONE'
-    const canary = seen.match(/CANARY-[0-9a-f]{8}/)?.[0] ?? 'NONE'
-    const ctx = honours ? 40_000 : PRE
-    return { status: 0, stdout: JSON.stringify({ result: `${hid} ${canary}`, usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: ctx - 10 } }) }
-  }
-}
-
-function deps(home: string, transcript: string, o: { honours?: boolean; restartOk?: boolean; onVerify?: () => void } = {}) {
-  const restarts: string[] = []
-  const claude = fakeClaude(dirname(transcript), o.honours ?? true)
-  const d: ApplyDeps = {
-    config: configFor(home, HANDOFF_ENV),
-    now: () => T0 + 51 * MIN,
-    runClaude: (args) => {
-      const r = claude(args)
-      o.onVerify?.()
-      return r
-    },
-    runRestart: (_cmd, sid) => {
-      restarts.push(sid)
-      return o.restartOk ?? true
-    },
-  }
-  return { d, restarts }
-}
-
-function requested(home: string, transcript: string, summary: string | null = SUMMARY) {
-  requestHandoff(home, SID, PRE, transcript, T0 + 50 * MIN)
-  if (summary !== null) writeFileSync(summaryPath(home, SID), summary)
-}
-
-// --- wake / record ----------------------------------------------------------------
 
 function idleSession(env: Record<string, string>, extra: Partial<ReturnType<typeof newSession>> = {}) {
   const home = tempHome()
@@ -92,23 +38,25 @@ function idleSession(env: Record<string, string>, extra: Partial<ReturnType<type
   return { home, config, transcript }
 }
 
-test('wake: a spent budget on a warm, large cache asks for a handoff instead of letting it die', () => {
+// --- wake / record ----------------------------------------------------------------
+
+test('wake: a spent budget on a warm, large cache asks for a brief instead of letting it die', () => {
   const { home, config } = idleSession(HANDOFF_ENV)
   const ctx = makeCtx(config, T0 + (T.minAgeSec + 60) * 1000)
   assert.equal(wake({ session_id: SID }, ctx), 2)
   assert.ok(ctx.errors[0].startsWith(WAKE_MARKER), 'the wake prompt must stay recognisable to touch')
-  assert.ok(ctx.errors[0].includes(summaryPath(home, SID)))
+  assert.ok(ctx.errors[0].includes(briefPath(home, SID)))
+  assert.match(ctx.errors[0], /NEW session/)
   const s = loadSession(home, SID)!
   assert.equal(s.pendingPing, true)
   assert.equal(s.handoffPending, true)
   assert.equal(loadRecord(home, SID)!.status, 'requested')
 })
 
-test('wake: no handoff when switched off, already asked, cold, small, after a miss, or switched itself off', () => {
+test('wake: no handoff when switched off, already asked, cold, small, or after a miss', () => {
   const at = T0 + (T.minAgeSec + 60) * 1000
   const cases: Array<[string, Record<string, string>, object, number?]> = [
     ['off by default', {}, {}],
-    ['no restart command', { CACHE_KEEPER_HANDOFF: '1' }, {}],
     ['already asked', HANDOFF_ENV, { handoffRequested: true }],
     ['small context', HANDOFF_ENV, { ctxTokens: 60_000 }],
     ['after an oracle miss', HANDOFF_ENV, { lastPingHit: false }],
@@ -118,144 +66,176 @@ test('wake: no handoff when switched off, already asked, cold, small, after a mi
     const { config } = idleSession(env, extra)
     assert.equal(wake({ session_id: SID }, makeCtx(config, now ?? at)), 0, name)
   }
-  const { home, config } = idleSession(HANDOFF_ENV)
-  writeFileSync(join(home, 'handoff-disabled.json'), '{}')
-  assert.equal(wake({ session_id: SID }, makeCtx(config, at)), 0, 'switched itself off')
 })
 
-test('record: the Stop closing a handoff wake starts the apply step once', () => {
-  const { home, config, transcript } = idleSession(HANDOFF_ENV)
-  const pingAt = T0 + (T.minAgeSec + 60) * 1000
-  wake({ session_id: SID }, makeCtx(config, pingAt))
-  appendFileSync(transcript, `${assistantLine({ at: pingAt + 2000, read: PRE, write: 500 })}\n`)
-  const started: string[] = []
-  const ctx = { ...makeCtx(config, pingAt + 3000), startHandoff: (sid: string) => started.push(sid) }
-  record({ session_id: SID, transcript_path: transcript }, ctx)
-  record({ session_id: SID, transcript_path: transcript }, ctx)
-  assert.deepEqual(started, [SID])
-  assert.equal(loadSession(home, SID)!.handoffPending, false)
-})
+/** Run the handoff wake and the Stop that closes it, the brief written (or not) in between. */
+function handedOff(env: Record<string, string>, brief: string | null = BRIEF) {
+  const s = idleSession(env)
+  const wakeAt = T0 + 50 * MIN
+  assert.equal(wake({ session_id: SID }, makeCtx(s.config, wakeAt)), 2)
+  if (brief !== null) writeFileSync(briefPath(s.home, SID), brief)
+  writeFileSync(s.transcript, `${readFileSync(s.transcript, 'utf8')}${assistantLine({ at: wakeAt + 5000, read: PRE, write: 900 })}\n`)
+  record({ session_id: SID, transcript_path: s.transcript }, makeCtx(s.config, wakeAt + 6000))
+  return { ...s, briefAt: wakeAt + 5000 }
+}
 
-// --- the splice ----------------------------------------------------------------------
-
-test('buildSplice: boundary cuts the chain, the summary hangs off it', () => {
-  const home = tempHome()
-  const text = readFileSync(transcriptIn(home), 'utf8')
-  const [boundary, summary] = buildSplice(text, { sessionId: SID, summary: SUMMARY, handoffId: 'H-1', backupPath: '/b.jsonl', now: T0 }).map((l) => JSON.parse(l))
-  assert.equal(boundary.subtype, 'compact_boundary')
-  assert.equal(boundary.parentUuid, null)
-  assert.equal(boundary.logicalParentUuid, 'a1')
-  assert.equal(boundary.version, '2.1.281')
-  assert.equal(summary.parentUuid, boundary.uuid)
-  assert.equal(summary.isCompactSummary, true)
-  assert.ok(summary.message.content.includes('HANDOFF-ID H-1'))
-  assert.ok(summary.message.content.includes('/b.jsonl'))
-})
-
-// --- apply -----------------------------------------------------------------------------
-
-test('apply: verified on a copy, appended, restarted; the session alone is told', () => {
-  const home = tempHome()
-  const transcript = transcriptIn(home)
+test('record: the Stop closing a handoff wake marks the brief ready, once; the transcript is untouched', () => {
+  const { home, transcript } = handedOff(HANDOFF_ENV)
   const before = readFileSync(transcript, 'utf8')
-  requested(home, transcript)
-  const { d, restarts } = deps(home, transcript)
-  const r = applyHandoff(SID, d)
-  assert.equal(r.ok, true)
-  assert.deepEqual(restarts, [SID])
-  const after = readFileSync(transcript, 'utf8')
-  assert.ok(after.startsWith(before))
-  assert.ok(after.slice(before.length).includes('"compact_boundary"'))
-  assert.ok(!after.includes('CANARY-'), 'the canary lives only in the copy')
   const rec = loadRecord(home, SID)!
-  assert.equal(rec.status, 'applied')
-  assert.equal(readFileSync(rec.backupPath!, 'utf8'), before)
-  assert.equal(takeNotices(home, 'other-session', T0 + 52 * MIN).length, 0)
-  assert.equal(takeNotices(home, SID, T0 + 52 * MIN).length, 1)
-  assert.ok(readLedger(home).some((e) => e.event === 'handoff'))
+  assert.equal(rec.status, 'ready')
+  assert.equal(loadSession(home, SID)!.handoffPending, false)
+  assert.ok(readLedger(home).some((e) => e.event === 'handoff-ready'))
+  assert.ok(!before.includes('compact_boundary'))
 })
 
-test('apply: no summary on disk — nothing touched, every session told', () => {
-  const home = tempHome()
-  const transcript = transcriptIn(home)
-  const before = readFileSync(transcript, 'utf8')
-  requested(home, transcript, null)
-  const { d, restarts } = deps(home, transcript)
-  assert.deepEqual(applyHandoff(SID, d), { ok: false, failure: 'no-summary', detail: undefined })
-  assert.equal(readFileSync(transcript, 'utf8'), before)
-  assert.deepEqual(restarts, [])
-  assert.match(takeNotices(home, 'any', T0 + 52 * MIN)[0], /rolled back \(no-summary\)/)
-  assert.equal(isHandoffDisabled(home), false)
+test('record: no brief on disk — failed, and the session alone is told', () => {
+  const { home } = handedOff(HANDOFF_ENV, null)
+  assert.equal(loadRecord(home, SID)!.status, 'failed')
+  assert.equal(takeNotices(home, 'other', T0 + 2 * HOUR).length, 0)
+  assert.match(takeNotices(home, SID, T0 + 2 * HOUR)[0], /wrote none/)
 })
 
-test('apply: a CLI that ignores the boundary fails verification — nothing touched, handoff switches off', () => {
-  const home = tempHome()
-  const transcript = transcriptIn(home)
-  const before = readFileSync(transcript, 'utf8')
-  requested(home, transcript)
-  const { d, restarts } = deps(home, transcript, { honours: false })
-  const r = applyHandoff(SID, d)
-  assert.equal(r.ok, false)
-  assert.equal(!r.ok && r.failure, 'verify-failed')
-  assert.equal(readFileSync(transcript, 'utf8'), before)
-  assert.deepEqual(restarts, [])
-  assert.equal(isHandoffDisabled(home), true)
-  assert.match(takeNotices(home, 'any', T0 + 52 * MIN)[0], /handoff-enable/)
-  enableHandoff(home)
-  assert.equal(isHandoffDisabled(home), false)
-})
+// --- touch: the menu ------------------------------------------------------------------
 
-test('apply: a verify run that never reached the model (auth) rolls back but keeps handoff on', () => {
-  const home = tempHome()
-  const transcript = transcriptIn(home)
-  const before = readFileSync(transcript, 'utf8')
-  requested(home, transcript)
-  const { d } = deps(home, transcript)
-  d.runClaude = () => ({ status: 1, stdout: JSON.stringify({ is_error: true, result: 'Failed to authenticate' }) })
-  const r = applyHandoff(SID, d)
-  assert.equal(!r.ok && r.failure, 'verify-error')
-  assert.equal(readFileSync(transcript, 'utf8'), before)
-  assert.equal(isHandoffDisabled(home), false)
-  assert.match(takeNotices(home, 'any', T0 + 52 * MIN)[0], /Failed to authenticate/)
-})
+interface Out {
+  json: any[]
+  spawns: Array<{ command: string; env: Record<string, string> }>
+  closes: string[]
+}
 
-test('apply: the human came back during verification — nothing touched, nobody bothered', () => {
-  const home = tempHome()
-  const transcript = transcriptIn(home)
-  requested(home, transcript)
-  const { d } = deps(home, transcript, { onVerify: () => appendFileSync(transcript, `${assistantLine({ at: T0 + 51 * MIN })}\n`) })
-  const r = applyHandoff(SID, d)
-  assert.equal(!r.ok && r.failure, 'transcript-changed')
-  assert.ok(!readFileSync(transcript, 'utf8').includes('compact_boundary'))
-  assert.equal(takeNotices(home, 'any', T0 + 52 * MIN).length, 0)
-})
-
-test('apply: a failed restart truncates the transcript back to its old bytes', () => {
-  const home = tempHome()
-  const transcript = transcriptIn(home)
-  const before = readFileSync(transcript, 'utf8')
-  requested(home, transcript)
-  const { d, restarts } = deps(home, transcript, { restartOk: false })
-  const r = applyHandoff(SID, d)
-  assert.equal(!r.ok && r.failure, 'restart-failed')
-  assert.deepEqual(restarts, [SID])
-  assert.equal(readFileSync(transcript, 'utf8'), before)
-  assert.equal(isHandoffDisabled(home), false)
-})
-
-// --- post-check ------------------------------------------------------------------------
-
-test('postCheck: a smaller context confirms; a full one switches handoff off', () => {
-  for (const [ctxTokens, status] of [[45_000, 'checked'], [PRE, 'failed']] as const) {
-    const home = tempHome()
-    const transcript = transcriptIn(home)
-    requested(home, transcript)
-    applyHandoff(SID, deps(home, transcript).d)
-    takeNotices(home, SID, T0 + 52 * MIN)
-    postCheck(home, SID, { ctxTokens, timestamp: T0 + 70 * MIN }, T0 + 70 * MIN)
-    assert.equal(loadRecord(home, SID)!.status, status)
-    assert.equal(isHandoffDisabled(home), status === 'failed')
+function touchCtx(config: ReturnType<typeof configFor>, now: number, spawnOk = true) {
+  const out: Out = { json: [], spawns: [], closes: [] }
+  const io: HandoffIO = {
+    spawn: (command, env) => {
+      out.spawns.push({ command, env })
+      return { ok: spawnOk, output: spawnOk ? 'started cc:12345678' : 'key held by a live session' }
+    },
+    closeLater: (sid) => out.closes.push(sid),
   }
+  const ctx = { ...makeCtx(config, now), stdout: (t: string) => out.json.push(JSON.parse(t)), handoffIO: io }
+  return { ctx, out }
+}
+
+test('touch: back while the cache is still warm — the prompt passes and the brief is retired', () => {
+  const { home, config, briefAt } = handedOff(SPAWN_ENV)
+  const { ctx, out } = touchCtx(config, briefAt + 30 * MIN)
+  touch({ session_id: SID, prompt: 'hello' }, ctx)
+  assert.equal(out.json.filter((j) => j.decision === 'block').length, 0)
+  assert.equal(loadRecord(home, SID)!.choice, 'warm')
+  assert.equal(loadSession(home, SID)!.lastHumanAt, briefAt + 30 * MIN)
+})
+
+test('touch: a cold cache with a brief blocks the prompt, shows the menu and changes nothing else', () => {
+  const { home, config, briefAt } = handedOff(SPAWN_ENV)
+  const now = briefAt + 2 * HOUR
+  const { ctx, out } = touchCtx(config, now)
+  const before = loadSession(home, SID)!
+  touch({ session_id: SID, prompt: 'what next?' }, ctx)
+  assert.equal(out.json.length, 1)
+  assert.equal(out.json[0].decision, 'block')
+  assert.match(out.json[0].reason, /gone cold \(idle 2h 00m\)/)
+  assert.match(out.json[0].reason, /~151k tokens \(≈ \$1\.51\)/)
+  assert.match(out.json[0].reason, /this session closes/)
+  assert.equal(loadRecord(home, SID)!.heldPrompt, 'what next?')
+  const after = loadSession(home, SID)!
+  assert.equal(after.lastHumanAt, before.lastHumanAt, 'a blocked prompt never ran')
+  assert.equal(out.spawns.length, 0)
+})
+
+test('touch: the same text again continues here, without extra context', () => {
+  const { home, config, briefAt } = handedOff(SPAWN_ENV)
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR)
+  touch({ session_id: SID, prompt: 'what next?' }, ctx)
+  touch({ session_id: SID, prompt: 'what next?\n' }, ctx)
+  assert.equal(out.json.length, 1, 'only the menu was printed')
+  const rec = loadRecord(home, SID)!
+  assert.equal(rec.status, 'used')
+  assert.equal(rec.choice, 'here')
+  assert.ok(readLedger(home).some((e) => e.event === 'handoff-here'))
+})
+
+test('touch: `1` continues here and hands the held message to the model', () => {
+  const { config, briefAt } = handedOff(SPAWN_ENV)
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR)
+  touch({ session_id: SID, prompt: 'what next?' }, ctx)
+  touch({ session_id: SID, prompt: '1' }, ctx)
+  assert.equal(out.json.length, 2)
+  assert.equal(out.json[1].decision, undefined)
+  assert.match(out.json[1].hookSpecificOutput.additionalContext, /held while cache-keeper asked[\s\S]*what next\?/)
+})
+
+test('touch: any other text replaces the held message and shows the menu again', () => {
+  const { home, config, briefAt } = handedOff(SPAWN_ENV)
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR)
+  touch({ session_id: SID, prompt: 'what next?' }, ctx)
+  touch({ session_id: SID, prompt: 'actually, run the tests' }, ctx)
+  assert.equal(out.json.filter((j) => j.decision === 'block').length, 2)
+  assert.equal(loadRecord(home, SID)!.heldPrompt, 'actually, run the tests')
+})
+
+test('touch: `2` spawns a new session from brief + held message, then closes this one', () => {
+  const { home, config, briefAt, transcript } = handedOff(SPAWN_ENV)
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR)
+  touch({ session_id: SID, prompt: 'what next?' }, ctx)
+  touch({ session_id: SID, prompt: '2' }, ctx)
+  assert.equal(out.spawns.length, 1)
+  const { command, env } = out.spawns[0]
+  assert.equal(command, 'start-new')
+  assert.equal(env.CACHE_KEEPER_BRIEF, continuePath(home, SID))
+  assert.equal(env.CACHE_KEEPER_SESSION_ID, SID)
+  assert.equal(env.CACHE_KEEPER_TRANSCRIPT_PATH, transcript)
+  assert.equal(env.CACHE_KEEPER_CWD, '/home/user/project')
+  const brief = readFileSync(env.CACHE_KEEPER_BRIEF, 'utf8')
+  assert.ok(brief.startsWith('Goal: ship the handoff.'))
+  assert.match(brief, /## The user's message on return\n\nwhat next\?/)
+  assert.deepEqual(out.closes, [SID])
+  assert.equal(out.json[1].decision, 'block', 'the new session answers, not this one')
+  assert.match(out.json[1].reason, /cc:12345678/)
+  assert.equal(loadRecord(home, SID)!.choice, 'new')
+})
+
+test('touch: a failed spawn keeps this session open and the menu alive', () => {
+  const { home, config, briefAt } = handedOff(SPAWN_ENV)
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR, false)
+  touch({ session_id: SID, prompt: 'what next?' }, ctx)
+  touch({ session_id: SID, prompt: '2' }, ctx)
+  assert.equal(out.closes.length, 0)
+  assert.match(out.json[1].reason, /did not start[\s\S]*key held/)
+  const rec = loadRecord(home, SID)!
+  assert.equal(rec.status, 'ready')
+  assert.equal(rec.heldPrompt, 'what next?')
+})
+
+test('touch: without a spawn command, `2` only writes the file and closes nothing', () => {
+  const { home, config, briefAt } = handedOff(HANDOFF_ENV)
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR)
+  touch({ session_id: SID, prompt: 'what next?' }, ctx)
+  assert.match(out.json[0].reason, /write the brief plus your message to a file/)
+  touch({ session_id: SID, prompt: '2' }, ctx)
+  assert.equal(out.spawns.length, 0)
+  assert.equal(out.closes.length, 0)
+  assert.ok(existsSync(continuePath(home, SID)))
+  assert.ok(out.json[1].reason.includes(continuePath(home, SID)))
+})
+
+test('touch: closeAfterSpawn off — spawned, not closed', () => {
+  const { config, briefAt } = handedOff({ ...SPAWN_ENV, CACHE_KEEPER_HANDOFF_CLOSE: '0' })
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR)
+  touch({ session_id: SID, prompt: 'what next?' }, ctx)
+  touch({ session_id: SID, prompt: '2' }, ctx)
+  assert.equal(out.spawns.length, 1)
+  assert.equal(out.closes.length, 0)
+})
+
+test('touch: a cold cache without a ready brief is not intercepted', () => {
+  const home = tempHome()
+  const config = configFor(home, SPAWN_ENV)
+  saveSession(home, { ...newSession(SID), transcriptPath: transcriptIn(home), lastTurnEndAt: T0, ctxTokens: PRE })
+  requestHandoff(home, loadSession(home, SID)!, T0)
+  const { ctx, out } = touchCtx(config, T0 + 3 * HOUR)
+  touch({ session_id: SID, prompt: 'hello' }, ctx)
+  assert.equal(out.json.length, 0)
 })
 
 // --- notices ---------------------------------------------------------------------------

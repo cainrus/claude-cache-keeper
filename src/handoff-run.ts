@@ -1,17 +1,18 @@
 /**
- * The process side of a handoff: the detached apply step and the real
- * `claude` / restart runners. Kept apart from handoff.ts so that one stays
- * testable without spawning anything.
+ * The process side of a handoff: run the spawn command, and close the old
+ * session once the hook that decided it has returned. Kept apart from
+ * handoff.ts so that one stays testable without spawning anything.
  */
 
-import { spawn, spawnSync } from 'node:child_process'
-import { writeFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import type { Config } from './config.ts'
-import type { ApplyDeps, ClaudeRun } from './handoff.ts'
+import type { HandoffIO } from './handoff.ts'
 
-export const VERIFY_TIMEOUT_MS = 180_000
-export const RESTART_TIMEOUT_MS = 60_000
+/** The touch hook's own timeout is 60 s; leave room for the rest of it. */
+export const SPAWN_TIMEOUT_MS = 45_000
+
+/** Long enough for the hook to answer before its session goes away. */
+export const CLOSE_DELAY_SEC = 2
 
 /**
  * The env a nested `claude` needs: the session's own credentials and config
@@ -25,43 +26,49 @@ export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     if (k.startsWith('CLAUDE_CODE_') && k !== 'CLAUDE_CODE_OAUTH_TOKEN') continue
     out[k] = v
   }
-  out.CACHE_KEEPER_DISABLED = '1'
   return out
 }
 
-export function realDeps(config: Config): ApplyDeps {
-  const settings = join(config.home, 'handoff-verify-settings.json')
-  return {
-    config,
-    now: () => Date.now(),
-    runClaude(args, cwd): ClaudeRun {
-      mkdirSync(config.home, { recursive: true })
-      writeFileSync(settings, `${JSON.stringify({ disableAllHooks: true })}\n`)
-      const r = spawnSync(config.handoff.claudeBin, [...args, '--settings', settings], {
-        cwd,
-        env: childEnv(process.env),
-        encoding: 'utf8',
-        timeout: VERIFY_TIMEOUT_MS,
-      })
-      return { status: r.status, stdout: r.stdout ?? '' }
-    },
-    runRestart(command, sessionId, transcriptPath) {
-      const r = spawnSync('/bin/sh', ['-c', command], {
-        env: { ...process.env, CACHE_KEEPER_SESSION_ID: sessionId, CACHE_KEEPER_TRANSCRIPT_PATH: transcriptPath },
-        stdio: 'ignore',
-        timeout: RESTART_TIMEOUT_MS,
-      })
-      return r.error === undefined && r.status === 0
-    },
+/** The nearest ancestor named claude: the session this hook runs in. */
+export function claudeAncestor(startPid = process.ppid): number | undefined {
+  let pid = startPid
+  for (let i = 0; i < 10 && pid > 1; i++) {
+    let line: string
+    try {
+      line = execFileSync('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+    } catch {
+      return undefined
+    }
+    const [ppid, ...comm] = line.split(/\s+/)
+    if (/(^|\/)claude$/.test(comm.join(' '))) return pid
+    pid = Number(ppid)
   }
+  return undefined
 }
 
-/** Run `<script> handoff-apply <sid>` detached: it outlives the Stop hook and the restart it causes. */
-export function spawnApply(script: string, sessionId: string): void {
-  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', script, 'handoff-apply', sessionId], {
-    detached: true,
-    stdio: 'ignore',
-    env: process.env,
-  })
-  child.unref()
+export function realIO(config: Config): HandoffIO {
+  return {
+    spawn(command, extra) {
+      const r = spawnSync('/bin/sh', ['-c', command], {
+        env: { ...childEnv(process.env), ...extra },
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: SPAWN_TIMEOUT_MS,
+      })
+      const output = `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? `\n${r.error.message}` : ''}`
+      return { ok: r.error === undefined && r.status === 0, output }
+    },
+    closeLater(sessionId) {
+      const pid = claudeAncestor()
+      const command = config.handoff.closeCommand ?? (pid ? `kill -TERM ${pid}` : undefined)
+      if (!command) return
+      // Detached: killing the session kills this hook too, so the close must outlive it.
+      const child = spawn('/bin/sh', ['-c', `sleep ${CLOSE_DELAY_SEC}; ${command}`], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, CACHE_KEEPER_SESSION_ID: sessionId, CACHE_KEEPER_CLAUDE_PID: pid ? String(pid) : '' },
+      })
+      child.unref()
+    },
+  }
 }

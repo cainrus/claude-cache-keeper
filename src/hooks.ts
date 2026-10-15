@@ -11,6 +11,9 @@ export const NODE = 'node --disable-warning=ExperimentalWarning'
 /** The plugin form: Claude Code substitutes the variable before the shell sees it. */
 export const PLUGIN_SCRIPT = '"${CLAUDE_PLUGIN_ROOT}/bin/cache-keeper.ts"'
 
+/** touch may start a new session from a handoff brief (handoff-run.ts allows the spawn 45 s). */
+export const TOUCH_TIMEOUT_SEC = 60
+
 /** Upper bound for the waiter. Documented as unenforced for async hooks; set anyway in case it is. */
 export const WAIT_TIMEOUT_SEC = 7200
 
@@ -45,7 +48,7 @@ export interface HooksBlock {
 }
 
 export function buildHooks(script: string): HooksBlock {
-  const run = (sub: string): CommandHook => ({ type: 'command', command: `${NODE} ${script} ${sub}`, timeout: 10 })
+  const run = (sub: string, timeout = 10): CommandHook => ({ type: 'command', command: `${NODE} ${script} ${sub}`, timeout })
   return {
     hooks: {
       Stop: [
@@ -56,7 +59,7 @@ export function buildHooks(script: string): HooksBlock {
           ],
         },
       ],
-      UserPromptSubmit: [{ hooks: [run('touch')] }],
+      UserPromptSubmit: [{ hooks: [run('touch', TOUCH_TIMEOUT_SEC)] }],
       SessionEnd: [{ hooks: [run('end')] }],
     },
   }

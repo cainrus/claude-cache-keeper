@@ -15,7 +15,7 @@ import { buildHooks, PLUGIN_SCRIPT } from '../src/hooks.ts'
 import { readLedger } from '../src/ledger.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
 import { sessionPath } from '../src/state.ts'
-import { SID, tempHome, writeTranscript } from './helpers.ts'
+import { assistantLine, SID, tempHome, writeTranscript } from './helpers.ts'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const hooksJson = JSON.parse(readFileSync(join(ROOT, 'hooks/hooks.json'), 'utf8'))
@@ -153,6 +153,39 @@ test('e2e: the delay reaches sleep from the environment', () => {
   assert.equal(w.status, 2)
   assert.ok(w.ms >= 1000, `took ${w.ms} ms`)
 })
+
+test('e2e: handoff — brief on the last wake, then a cold prompt is held and `2` spawns from the brief', () => {
+  const home = tempHome()
+  const env = { CACHE_KEEPER_HOME: home, CACHE_KEEPER_IDLE_SEC: String(T.awaySec + 1), CACHE_KEEPER_DELAY_SEC: '0' }
+  // cacheTtlSec 0: the cache counts as cold right after the brief turn.
+  // closeAfterSpawn off: a real close would SIGTERM the claude this suite may run in.
+  writeFileSync(
+    join(home, 'config.json'),
+    JSON.stringify({ cacheTtlSec: 0, handoff: { enabled: true, closeAfterSpawn: false, spawnCommand: 'echo "spawned from $CACHE_KEEPER_BRIEF"' } }),
+  )
+  const transcript = writeTranscript(home, [{ at: Date.now() - (T.minAgeSec + 60) * 1000, read: 150_000, write: 500 }])
+  const stop = { session_id: SID, transcript_path: transcript, hook_event_name: 'Stop', stop_hook_active: false }
+  run(command('Stop', 0), stop, env)
+  const w = run(command('Stop', 1), stop, env)
+  assert.equal(w.status, 2)
+  const brief = w.stderr.match(/to (\S+\.md) with the Write tool/)![1]
+  writeFileSync(brief, `Goal: e2e.\n${'State of the work. '.repeat(30)}`)
+  writeFileSync(transcript, `${readFileSync(transcript, 'utf8')}${assistantLine({ at: Date.now(), read: 150_500, write: 300 })}\n`)
+  run(command('Stop', 0), { ...stop, stop_hook_active: true }, env)
+
+  const prompt = { session_id: SID, transcript_path: transcript, hook_event_name: 'UserPromptSubmit' }
+  const held = run(command('UserPromptSubmit'), { ...prompt, prompt: 'where were we?' }, env)
+  assert.equal(held.status, 0)
+  const menu = JSON.parse(held.stdout)
+  assert.equal(menu.decision, 'block')
+  assert.match(menu.reason, /gone cold/)
+  const two = run(command('UserPromptSubmit'), { ...prompt, prompt: '2' }, env)
+  const done = JSON.parse(two.stdout)
+  assert.equal(done.decision, 'block')
+  assert.match(done.reason, /continued in a new session\.\nspawned from .*-continue\.md/)
+  assert.ok(readLedger(home).some((e) => e.event === 'handoff-new'))
+})
+
 
 test('e2e: garbage on stdin never fails a hook', () => {
   const { env } = fresh()

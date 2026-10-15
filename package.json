@@ -1,6 +1,6 @@
 {
   "name": "claude-cache-keeper",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Keeps an idle Claude Code session's prompt cache warm with a Stop hook — only while someone is plausibly coming back.",
   "type": "module",
   "license": "Apache-2.0",

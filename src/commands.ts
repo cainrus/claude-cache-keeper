@@ -10,7 +10,7 @@
  */
 
 import type { Config } from './config.ts'
-import { handoffMessage, postCheck, requestHandoff, wantsHandoff } from './handoff.ts'
+import { handoffMessage, interceptPrompt, requestHandoff, settleHandoff, wantsHandoff, type HandoffIO } from './handoff.ts'
 import { appendLedger } from './ledger.ts'
 import { takeNotices } from './notices.ts'
 import { decide, isAtKeyboard } from './policy.ts'
@@ -49,8 +49,8 @@ export interface Ctx {
   skipIf?: (facts: SessionFacts) => boolean
   /** Hook stdout (UserPromptSubmit JSON). */
   stdout?: (text: string) => void
-  /** Start the handoff apply step for a session, detached from the hook. */
-  startHandoff?: (sessionId: string) => void
+  /** Spawn and close for the handoff menu (see handoff-run.ts). */
+  handoffIO?: HandoffIO
 }
 
 const blockingSleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -115,7 +115,6 @@ export function record(input: HookInput, ctx: Ctx): number {
   // is also set when some other Stop hook blocked the turn; scoring that turn
   // could record a spurious miss and mute this session for good.
   const closedWake = state.pendingPing
-  if (!closedWake && usage) postCheck(home, sid, usage, ctx.now)
   if (state.pendingPing) {
     state.pendingPing = false
     if (usage) {
@@ -139,7 +138,7 @@ export function record(input: HookInput, ctx: Ctx): number {
   const handoff = closedWake && state.handoffPending === true
   state.handoffPending = false
   saveSession(home, state)
-  if (handoff) ctx.startHandoff?.(sid)
+  if (handoff) settleHandoff(home, sid, ctx.now)
   return 0
 }
 
@@ -196,7 +195,7 @@ export function wake(input: HookInput, ctx: Ctx): number {
       ) &&
       !ctx.skipIf?.(facts)
     if (handoff) {
-      const path = requestHandoff(home, sid, state.ctxTokens, state.transcriptPath!, ctx.now)
+      const path = requestHandoff(home, state, ctx.now)
       state.pendingPing = true
       state.handoffRequested = true
       state.handoffPending = true
@@ -228,13 +227,23 @@ export function wake(input: HookInput, ctx: Ctx): number {
   return 2
 }
 
-/** UserPromptSubmit: a real prompt closes the idle stretch. The wake turn's own prompt is ignored. */
+/**
+ * UserPromptSubmit: a real prompt closes the idle stretch. The wake turn's own
+ * prompt is ignored. A prompt into a cold cache with a handoff brief waiting is
+ * blocked first (see handoff.ts) and then changes nothing here: it never ran.
+ */
 export function touch(input: HookInput, ctx: Ctx): number {
   const sid = input.session_id
   if (!sid || isWakePrompt(input.prompt)) return 0
   const { home } = ctx.config
   const state = loadSession(home, sid) ?? newSession(sid)
   if (input.transcript_path) state.transcriptPath = input.transcript_path
+
+  const held = interceptPrompt(input.prompt ?? '', state, ctx.config, ctx.now, ctx.handoffIO)
+  if (held?.kind === 'block') {
+    ctx.stdout?.(`${JSON.stringify({ decision: 'block', reason: held.reason })}\n`)
+    return 0
+  }
 
   if (state.pingsSoFar > 0) {
     appendLedger(home, {
@@ -257,11 +266,13 @@ export function touch(input: HookInput, ctx: Ctx): number {
   saveSession(home, state)
 
   const notes = takeNotices(home, sid, ctx.now)
-  if (notes.length > 0) {
-    const text = notes.join('\n')
-    ctx.stdout?.(
-      `${JSON.stringify({ systemMessage: text, hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } })}\n`,
-    )
+  const context = [...notes, ...(held?.context ? [held.context] : [])]
+  if (context.length > 0) {
+    const out: Record<string, unknown> = {
+      hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context.join('\n\n') },
+    }
+    if (notes.length > 0) out.systemMessage = notes.join('\n')
+    ctx.stdout?.(`${JSON.stringify(out)}\n`)
   }
   return 0
 }
