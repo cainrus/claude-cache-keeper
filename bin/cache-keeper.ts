@@ -6,7 +6,7 @@
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { end, record, touch, wake, type Ctx, type HookInput } from '../src/commands.ts'
+import { end, gate, record, touch, wake, type Ctx, type HookInput } from '../src/commands.ts'
 import { loadConfig } from '../src/config.ts'
 import { realIO } from '../src/handoff-run.ts'
 import { buildHooks, shellQuote, waitCommand } from '../src/hooks.ts'
@@ -25,6 +25,8 @@ Hook subcommands (read the hook input JSON on stdin):
   touch             UserPromptSubmit: a real prompt closes the idle stretch;
                     into a cold cache with a handoff brief, it asks first
   end               SessionEnd: forget the session
+  gate              called by the plugin's mod (hooks/gate.ts) before a "!" command, a slash
+                    command or a compaction reaches the model; same menu as touch
 
 Other:
   report [--json]   summarise the decision ledger
@@ -53,7 +55,7 @@ function parseInput(raw: string): HookInput {
   }
 }
 
-const HOOKS: Record<string, (input: HookInput, ctx: Ctx) => number> = { record, wake, touch, end }
+const HOOKS: Record<string, (input: HookInput, ctx: Ctx) => number> = { record, wake, touch, end, gate }
 
 function main(argv: string[]): number {
   const [cmd, ...rest] = argv

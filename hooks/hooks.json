@@ -1,4 +1,7 @@
 {
+  "modules": [
+    "./gate.ts"
+  ],
   "hooks": {
     "Stop": [
       {

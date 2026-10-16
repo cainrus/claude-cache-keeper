@@ -6,6 +6,7 @@
  *   Stop              -> record   (sync)   remember when the cache was touched, score a wake
  *   Stop              -> wake     (after `sleep`, asyncRewake) decide, maybe exit 2
  *   UserPromptSubmit  -> touch             a real prompt closes the idle stretch
+ *   mod (hooks/gate.ts) -> gate            `!`, a slash command or a compaction is about to reach the model
  *   SessionEnd        -> end               forget the session
  */
 
@@ -34,7 +35,12 @@ export interface HookInput {
   hook_event_name?: string
   stop_hook_active?: boolean
   prompt?: string
+  /** gate only: the mod is answering a model turn (turn.step), so a Stop will follow. */
+  gate_turn?: boolean
 }
+
+/** How long after a gated turn its Stop is still recognised as the gate's own. */
+const GATE_STOP_WINDOW_MS = 30_000
 
 export interface Ctx {
   config: Config
@@ -91,6 +97,16 @@ export function record(input: HookInput, ctx: Ctx): number {
   const { home, hitRatio } = ctx.config
   const state = loadSession(home, sid) ?? newSession(sid)
   if (input.transcript_path) state.transcriptPath = input.transcript_path
+
+  // A turn the gate answered with the menu never reached the model: it touched nothing.
+  if (state.gateTurnAt !== undefined) {
+    const own = ctx.now - state.gateTurnAt < GATE_STOP_WINDOW_MS
+    delete state.gateTurnAt
+    if (own) {
+      saveSession(home, state)
+      return 0
+    }
+  }
 
   // The turn this Stop closes began at our wake (pendingPing) or at the last
   // real prompt; its assistant entry cannot be older than that.
@@ -232,15 +248,19 @@ export function wake(input: HookInput, ctx: Ctx): number {
  * prompt is ignored. A prompt into a cold cache with a handoff brief waiting is
  * blocked first (see handoff.ts) and then changes nothing here: it never ran.
  */
-export function touch(input: HookInput, ctx: Ctx): number {
+export function touch(input: HookInput, ctx: Ctx, gate = false): number {
   const sid = input.session_id
   if (!sid || isWakePrompt(input.prompt)) return 0
   const { home } = ctx.config
   const state = loadSession(home, sid) ?? newSession(sid)
   if (input.transcript_path) state.transcriptPath = input.transcript_path
 
-  const held = interceptPrompt(input.prompt ?? '', state, ctx.config, ctx.now, ctx.handoffIO)
+  const held = interceptPrompt(input.prompt ?? '', state, ctx.config, ctx.now, ctx.handoffIO, gate)
   if (held?.kind === 'block') {
+    if (gate && input.gate_turn) {
+      state.gateTurnAt = ctx.now
+      saveSession(home, state)
+    }
     ctx.stdout?.(`${JSON.stringify({ decision: 'block', reason: held.reason })}\n`)
     return 0
   }
@@ -265,7 +285,8 @@ export function touch(input: HookInput, ctx: Ctx): number {
   state.lastHumanAt = ctx.now
   saveSession(home, state)
 
-  const notes = takeNotices(home, sid, ctx.now)
+  // A gate has no way to show notices, so it must not consume them.
+  const notes = gate ? [] : takeNotices(home, sid, ctx.now)
   const context = [...notes, ...(held?.context ? [held.context] : [])]
   if (context.length > 0) {
     const out: Record<string, unknown> = {
@@ -275,6 +296,17 @@ export function touch(input: HookInput, ctx: Ctx): number {
     ctx.stdout?.(`${JSON.stringify(out)}\n`)
   }
   return 0
+}
+
+/**
+ * The mod's gate (hooks/gate.ts): what UserPromptSubmit never sees — a `!`
+ * command, a slash command, a compaction — is about to start a model request.
+ * `prompt` is whatever the mod can tell of it (the turn's first text, or the
+ * command line); it plays the held message. Same decision as `touch`, same
+ * JSON on stdout; nothing is printed to let the request go.
+ */
+export function gate(input: HookInput, ctx: Ctx): number {
+  return touch(input, ctx, true)
 }
 
 /** SessionEnd: drop the session's state. A sleeper still pending will find nothing and exit 0. */

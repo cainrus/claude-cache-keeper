@@ -53,7 +53,9 @@ function fresh() {
 }
 
 test('hooks/hooks.json is exactly what the generator produces', () => {
-  assert.deepEqual(hooksJson, buildHooks(PLUGIN_SCRIPT))
+  const { modules, ...commands } = hooksJson
+  assert.deepEqual(modules, ['./gate.ts'])
+  assert.deepEqual(commands, buildHooks(PLUGIN_SCRIPT))
   const waiter = hooksJson.hooks.Stop[0].hooks[1]
   assert.equal(waiter.asyncRewake, true)
   assert.match(waiter.command, /^\[ "\$CLAUDE_CODE_ENTRYPOINT" = sdk-cli \] \|\| \{ sleep "\$\{CACHE_KEEPER_DELAY_SEC:-3000\}"; /)

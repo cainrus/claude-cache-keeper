@@ -33,6 +33,11 @@ export interface SessionState {
   handoffRequested?: boolean
   /** The open wake is a handoff: its closing Stop checks the brief. */
   handoffPending?: boolean
+  /**
+   * Epoch ms when the gate answered a turn itself instead of the model. That
+   * turn still ends with a Stop, which must not read as a touched cache.
+   */
+  gateTurnAt?: number
 }
 
 export interface AwayBudget {

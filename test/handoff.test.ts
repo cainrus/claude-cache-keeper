@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { record, touch, wake, WAKE_MARKER } from '../src/commands.ts'
+import { gate, record, touch, wake, WAKE_MARKER } from '../src/commands.ts'
 import { briefPath, continuePath, loadRecord, requestHandoff, type HandoffIO } from '../src/handoff.ts'
 import { readLedger } from '../src/ledger.ts'
 import { postNotice, takeNotices, NOTICE_TTL_MS } from '../src/notices.ts'
@@ -236,6 +236,75 @@ test('touch: a cold cache without a ready brief is not intercepted', () => {
   const { ctx, out } = touchCtx(config, T0 + 3 * HOUR)
   touch({ session_id: SID, prompt: 'hello' }, ctx)
   assert.equal(out.json.length, 0)
+})
+
+// --- the gate: what UserPromptSubmit never sees ---------------------------------------
+
+test('gate: a `!` command into a cold cache gets the menu, and its Stop does not read as a touched cache', () => {
+  const { home, config, transcript, briefAt } = handedOff(SPAWN_ENV)
+  const now = briefAt + 2 * HOUR
+  const { ctx, out } = touchCtx(config, now)
+  const lastTurn = loadSession(home, SID)!.lastTurnEndAt
+  postNotice(home, 'a notice', now - MIN)
+  gate({ session_id: SID, prompt: '<bash-stdout>hi</bash-stdout>', gate_turn: true }, ctx)
+  assert.equal(out.json.length, 1)
+  assert.equal(out.json[0].decision, 'block')
+  assert.match(out.json[0].reason, /run the same command again/)
+  assert.doesNotMatch(out.json[0].reason, /input box/)
+  assert.equal(takeNotices(home, SID, now).length, 1, 'a gate cannot show notices, so it leaves them')
+  // The Stop of the turn the gate answered.
+  record({ session_id: SID, transcript_path: transcript }, makeCtx(config, now + 1000))
+  const after = loadSession(home, SID)!
+  assert.equal(after.lastTurnEndAt, lastTurn, 'the cache is still cold')
+  assert.equal(after.gateTurnAt, undefined)
+  assert.equal(loadRecord(home, SID)!.status, 'ready', 'the menu is still open')
+})
+
+test('gate: the same command again continues here; `1` too', () => {
+  const { home, config, briefAt } = handedOff(SPAWN_ENV)
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR)
+  gate({ session_id: SID, prompt: '/compact', gate_turn: false }, ctx)
+  gate({ session_id: SID, prompt: '/compact', gate_turn: false }, ctx)
+  assert.equal(out.json.length, 1)
+  assert.equal(loadRecord(home, SID)!.choice, 'here')
+  assert.equal(loadSession(home, SID)!.gateTurnAt, undefined, 'a command that is not a turn expects no Stop')
+})
+
+test('gate: `2` after a gated `!` starts the new session from the brief', () => {
+  const { home, config, briefAt } = handedOff(SPAWN_ENV)
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR)
+  gate({ session_id: SID, prompt: '<bash-stdout>hi</bash-stdout>', gate_turn: true }, ctx)
+  touch({ session_id: SID, prompt: '2' }, ctx)
+  assert.equal(out.spawns.length, 1)
+  assert.equal(loadRecord(home, SID)!.choice, 'new')
+})
+
+test('gate: a warm cache, a wake turn and a session without a brief pass in silence', () => {
+  const warm = handedOff(SPAWN_ENV)
+  const w = touchCtx(warm.config, warm.briefAt + 10 * MIN)
+  gate({ session_id: SID, prompt: '!', gate_turn: true }, w.ctx)
+  assert.equal(w.out.json.length, 0)
+  assert.equal(loadRecord(warm.home, SID)!.choice, 'warm')
+
+  const cold = handedOff(SPAWN_ENV)
+  const c = touchCtx(cold.config, cold.briefAt + 2 * HOUR)
+  gate({ session_id: SID, prompt: WAKE_MARKER, gate_turn: true }, c.ctx)
+  assert.equal(c.out.json.length, 0, 'the keeper never asks itself')
+  assert.equal(loadRecord(cold.home, SID)!.status, 'ready')
+
+  const none = touchCtx(configFor(tempHome(), SPAWN_ENV), T0)
+  gate({ session_id: SID, prompt: '!', gate_turn: true }, none.ctx)
+  assert.equal(none.out.json.length, 0)
+})
+
+test('record: a Stop long after a gated turn is an ordinary Stop', () => {
+  const { home, config, transcript, briefAt } = handedOff(SPAWN_ENV)
+  saveSession(home, { ...loadSession(home, SID)!, gateTurnAt: briefAt })
+  const endedAt = briefAt + HOUR - 5000
+  writeFileSync(transcript, `${readFileSync(transcript, 'utf8')}${assistantLine({ at: endedAt, read: PRE, write: 900 })}\n`)
+  record({ session_id: SID, transcript_path: transcript }, makeCtx(config, briefAt + HOUR))
+  assert.equal(loadSession(home, SID)!.gateTurnAt, undefined)
+  assert.equal(loadSession(home, SID)!.lastTurnEndAt, endedAt, 'the flag was stale and did not swallow it')
 })
 
 // --- notices ---------------------------------------------------------------------------
