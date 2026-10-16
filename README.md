@@ -160,14 +160,13 @@ Your message is held and is back in the input box. Nothing was sent to the model
 - Anything else replaces the held message and shows the menu again.
 - Back before the cache expired: nothing is intercepted and the brief is retired.
 
-`!` commands and built-in slash commands never reach `UserPromptSubmit` (measured on Claude Code 2.1.299 and
-2.1.301), so the plugin also ships a small hooks module, `hooks/gate.ts`, that asks `cache-keeper gate` where such
+Skills (`/simplify`) go through `UserPromptSubmit` like any prompt, but `!` commands and built-in slash commands never
+do (measured on Claude Code 2.1.301), so the plugin also ships a small hooks module, `hooks/gate.ts`, that asks `cache-keeper gate` where such
 input does reach the model, and shows the same menu:
 
 | input | hook | what the menu does |
 |---|---|---|
 | `!cmd` | `turn.step` (first request of a turn) | answers the turn itself; no request is sent. The command already ran |
-| skill or prompt command (`/simplify`) | `prompt.submit` | drops it before it is rendered; the text stays in the input box |
 | `/compact` | `session.compact` | skips the compaction |
 | `/cost`, `/model`, `/status`… | — | make no model request; not gated |
 

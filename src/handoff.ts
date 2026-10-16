@@ -25,10 +25,10 @@
  *                anything else -> held instead, the menu again
  *
  * `!` commands and slash commands do not go through UserPromptSubmit (measured
- * on Claude Code 2.1.299 and 2.1.301). The plugin's mod (hooks/gate.ts) asks the
- * same question where they do pass: before a model request (`turn.step`), before
- * a skill's prompt (`prompt.submit`) and before `/compact` (`session.compact`).
- * The held "message" is then the command line or the turn's first text.
+ * on Claude Code 2.1.301; skills do). The plugin's mod (hooks/gate.ts) asks the
+ * same question where they do pass: before a model request (`turn.step`) and
+ * before `/compact` (`session.compact`). The held "message" is then the turn's
+ * first text or the command name.
  *
  *   handoffs/<session>.json            the record below
  *   handoffs/<session>.md              the brief the model wrote

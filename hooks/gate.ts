@@ -1,14 +1,13 @@
 /**
- * The mod half of the plugin. `UserPromptSubmit` never fires for a `!` command
- * or a built-in slash command (measured on Claude Code 2.1.299 and 2.1.301), so
- * a cold cache is hit with no menu. These hooks ask `cache-keeper gate` at the
- * points where such input does reach the model:
+ * The mod half of the plugin. `UserPromptSubmit` fires for a typed prompt and for
+ * skills (`/simplify`), but never for a `!` command or a built-in slash command
+ * (measured on Claude Code 2.1.301), so those hit a cold cache with no menu.
+ * These hooks ask `cache-keeper gate` at the points where such input does reach
+ * the model:
  *
  *   turn.step         the first model request of a turn: `!` commands, whatever
  *                     else started a turn without a prompt hook. A refusal is
  *                     answered here, so no request is sent.
- *   prompt.submit     a skill or prompt command typed by the person, dropped
- *                     before it is rendered, so no row is left behind.
  *   session.compact   `/compact`, which sends the whole context cold.
  *
  * Every hook fails open: a broken gate lets the input through.
@@ -54,13 +53,6 @@ export const register: Register = on => {
       }
     }
     return yield* next(e)
-  })
-
-  on('prompt.submit', async ($, e, next) => {
-    if (e.command === undefined || e.isMeta || e.origin?.kind !== 'composer') return next(e)
-    const reason = await ask($, e.text)
-    // A drop is shown as one line; the menu has several.
-    return reason === undefined ? next(e) : { drop: reason.split('\n').join('  |  ') }
   })
 
   on('session.compact', async ($, e, next) => {
