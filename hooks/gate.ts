@@ -23,14 +23,19 @@ const HELD_CHARS = 4000
 
 /** The reason to show when the gate stopped the input, else undefined. */
 async function ask($, text: string, turn = false): Promise<string | undefined> {
-  const sessionId = await $.session.id()
-  const { exitCode, stdout } = await $.process.run(
-    ['node', '--disable-warning=ExperimentalWarning', `${$.plugin.root}/bin/cache-keeper.ts`, 'gate'],
-    { stdin: JSON.stringify({ session_id: sessionId, prompt: text.slice(0, HELD_CHARS), gate_turn: turn }), timeoutMs: GATE_TIMEOUT_MS },
-  )
-  if (exitCode !== 0 || stdout.trim() === '') return undefined
-  const out = JSON.parse(stdout)
-  return out.decision === 'block' && typeof out.reason === 'string' ? out.reason : undefined
+  try {
+    const sessionId = await $.session.id()
+    const { exitCode, stdout } = await $.process.run(
+      ['node', '--disable-warning=ExperimentalWarning', `${$.plugin.root}/bin/cache-keeper.ts`, 'gate'],
+      { stdin: JSON.stringify({ session_id: sessionId, prompt: text.slice(0, HELD_CHARS), gate_turn: turn }), timeoutMs: GATE_TIMEOUT_MS },
+    )
+    if (exitCode !== 0 || stdout.trim() === '') return undefined
+    const out = JSON.parse(stdout)
+    return out.decision === 'block' && typeof out.reason === 'string' ? out.reason : undefined
+  } catch {
+    // A timeout, a spawn failure or output that is not JSON: let the input through.
+    return undefined
+  }
 }
 
 export const register: Register = on => {
