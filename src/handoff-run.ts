@@ -30,39 +30,45 @@ export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /** `ps -o ppid=,comm=` for one pid, or undefined when it is gone. */
-export type PsLine = (pid: number) => string | undefined
+export type ReadPsLine = (pid: number) => string | undefined
 
-const realPs: PsLine = pid => {
+const readPsLine: ReadPsLine = pid => {
   try {
-    return execFileSync('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+    return execFileSync('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
   } catch {
     return undefined
   }
 }
 
-/** An interactive session (`claude`) or a background one (`claude bg-spare`). */
-const SESSION_COMM = /(^|\/)claude( bg-spare)?$/
+/** A hook sits two or three processes below its session; the cap only stops a runaway walk. */
+const MAX_ANCESTORS = 10
 
 /**
- * Above a background session: its pty host, then the daemon that runs every
- * background session of the profile. Neither is the session.
+ * Titles that are a session, as `ps -o comm=` prints them (macOS, Claude Code
+ * 2.1.303-2.1.304): interactive `claude` or `…/claude/versions/2.1.304`,
+ * background `claude bg-spare`. The daemon that runs every background session
+ * is `…/.local/bin/claude`, and the pty host between it and a background
+ * session is `claude bg-pty-host`: neither may match.
  */
-const BEYOND_SESSION_COMM = /(^|\/)claude bg-pty-host$/
+const SESSION_COMM = [/^claude$/, /^claude bg-spare$/, /\/claude\/versions\/\d+\.\d+\.\d+$/]
 
 /**
- * The session this hook runs in. A background session's process is named
- * `claude bg-spare`; walking past it would reach the daemon, whose name is
- * plain `claude`, and closing that ends every background session.
+ * The session this hook runs in. The nearest ancestor whose title mentions
+ * `claude` decides: it is the session when its title is a known session title,
+ * and otherwise there is none. Walking on past an unknown title could reach the
+ * daemon, and closing that ends every background session.
  */
-export function claudeAncestor(startPid = process.ppid, ps: PsLine = realPs): number | undefined {
+export function claudeAncestor(startPid = process.ppid, ps: ReadPsLine = readPsLine): number | undefined {
   let pid = startPid
-  for (let i = 0; i < 10 && pid > 1; i++) {
-    const line = ps(pid)
-    if (line === undefined) return undefined
-    const [ppid, ...rest] = line.split(/\s+/)
-    const comm = rest.join(' ')
-    if (SESSION_COMM.test(comm)) return pid
-    if (BEYOND_SESSION_COMM.test(comm)) return undefined
+  for (let i = 0; i < MAX_ANCESTORS && pid > 1; i++) {
+    const m = ps(pid)?.match(/^(\d+)\s+(.*)$/)
+    if (!m) return undefined
+    const [, ppid, comm] = m
+    if (comm.includes('claude')) return SESSION_COMM.some(re => re.test(comm)) ? pid : undefined
     pid = Number(ppid)
   }
   return undefined
@@ -90,6 +96,8 @@ export function realIO(config: Config): HandoffIO {
         stdio: 'ignore',
         env: { ...process.env, CACHE_KEEPER_SESSION_ID: sessionId, CACHE_KEEPER_CLAUDE_PID: pid ? String(pid) : '' },
       })
+      // The handoff already happened; a close that cannot start leaves the old session open.
+      child.on('error', () => {})
       child.unref()
     },
   }
