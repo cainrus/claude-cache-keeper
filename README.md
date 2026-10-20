@@ -141,6 +141,10 @@ When the keeper stops holding a session (`away`, `away-budget-spent`, `budget-sp
 warm. With `handoff` on, it spends that last warm turn asking the model to write a self-contained brief for a new
 session to `$CACHE_KEEPER_HOME/handoffs/<session>.md`. The transcript is not touched.
 
+A session with a task list first brings it up to date (`TaskUpdate`), then copies every open step with its status
+under `## Task list` in the brief. When the new session starts from that brief, it is told to recreate those steps
+with `TaskCreate` before anything else, so the plan carries over instead of starting from scratch.
+
 When you come back after the cache has expired, your first prompt is stopped by the `UserPromptSubmit` hook before
 it reaches the model (no cold rewrite yet) and goes back to the input box, with a menu:
 

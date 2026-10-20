@@ -68,6 +68,8 @@ test('manifests agree with package.json', () => {
   assert.equal(plugin.version, pkg.version)
   assert.equal(market.plugins[0].name, plugin.name)
   assert.equal(market.plugins[0].version, pkg.version)
+  const printed = spawnSync(process.execPath, [join(ROOT, 'bin/cache-keeper.ts'), '--version'], { encoding: 'utf8' })
+  assert.equal(printed.stdout.trim(), pkg.version, '--version reports the released version')
 })
 
 test('e2e: record -> wait+wake pings -> wake turn scored -> human returns -> report -> end', () => {

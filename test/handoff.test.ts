@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { gate, record, touch, wake, WAKE_MARKER } from '../src/commands.ts'
-import { briefPath, continuePath, loadRecord, requestHandoff, type HandoffIO } from '../src/handoff.ts'
+import { briefPath, continuePath, loadRecord, openTaskSteps, requestHandoff, TASK_LIST_HEADING, type HandoffIO } from '../src/handoff.ts'
 import { readLedger } from '../src/ledger.ts'
 import { postNotice, takeNotices, NOTICE_TTL_MS } from '../src/notices.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
@@ -193,6 +193,79 @@ test('touch: `2` spawns a new session from brief + held message, then closes thi
   assert.equal(out.json[1].decision, 'block', 'the new session answers, not this one')
   assert.match(out.json[1].reason, /cc:12345678/)
   assert.equal(loadRecord(home, SID)!.choice, 'new')
+})
+
+const TASKS_BRIEF =
+  `${BRIEF}\n\n## Task list\n\n- [completed] Read the design\n- [in_progress] Write the handoff test — the spawn case is left\n` +
+  `- [pending] Release 0.3.1\n\n## Last exchanges\n\nok`
+
+test('wake: the brief request has the task list brought up to date first, then copied in with statuses', () => {
+  const { config } = idleSession(HANDOFF_ENV)
+  const ctx = makeCtx(config, T0 + (T.minAgeSec + 60) * 1000)
+  assert.equal(wake({ session_id: SID }, ctx), 2)
+  const ask = ctx.errors[0]
+  const update = ask.indexOf('TaskUpdate')
+  assert.ok(update >= 0 && update < ask.indexOf('Write tool'), 'statuses are updated before the brief is written')
+  assert.ok(ask.includes(TASK_LIST_HEADING))
+  assert.match(ask, /\[in_progress\]/)
+  assert.ok(ask.includes('## Last exchanges'), 'the exchanges get their own heading, so they end the task list')
+})
+
+test('touch: `2` with open task-list steps tells the new session to restore them with TaskCreate first', () => {
+  const { home, config, briefAt } = handedOff(SPAWN_ENV, TASKS_BRIEF)
+  const { ctx, out } = touchCtx(config, briefAt + 2 * HOUR)
+  touch({ session_id: SID, prompt: 'what next?' }, ctx)
+  touch({ session_id: SID, prompt: '2' }, ctx)
+  const text = readFileSync(continuePath(home, SID), 'utf8')
+  assert.ok(text.startsWith('Goal: ship the handoff.'), 'the brief itself stays first')
+  const restore = text.slice(text.indexOf('TaskCreate'))
+  assert.ok(text.indexOf('TaskCreate') > text.indexOf('(Continued from'), 'the restore step follows the brief')
+  assert.match(restore, /- \[in_progress\] Write the handoff test/, 'the open steps are spelled out in the restore step')
+  assert.match(restore, /- \[pending\] Release 0\.3\.1/)
+  assert.doesNotMatch(restore.slice(0, restore.indexOf("## The user's message on return")), /Read the design/, 'a completed step is not recreated')
+  assert.ok(text.indexOf('TaskCreate') < text.indexOf("## The user's message on return"), 'restore before taking up the message')
+  assert.equal(out.spawns.length, 1)
+})
+
+test('touch: `2` adds no restore step when the brief lists no open steps', () => {
+  for (const brief of [BRIEF, `${BRIEF}\n\n## Task list\n\nnone\n`, `${BRIEF}\n\n## Task list\n\n- [completed] Everything\n`]) {
+    const { home, config, briefAt } = handedOff(SPAWN_ENV, brief)
+    const { ctx } = touchCtx(config, briefAt + 2 * HOUR)
+    touch({ session_id: SID, prompt: 'what next?' }, ctx)
+    touch({ session_id: SID, prompt: '2' }, ctx)
+    assert.doesNotMatch(readFileSync(continuePath(home, SID), 'utf8'), /TaskCreate/)
+  }
+})
+
+test('openTaskSteps: only pending and in_progress lines of the task-list section count', () => {
+  assert.deepEqual(openTaskSteps(TASKS_BRIEF), ['- [in_progress] Write the handoff test — the spawn case is left', '- [pending] Release 0.3.1'])
+  assert.deepEqual(openTaskSteps(`${BRIEF}\n- [pending] outside the section`), [])
+  assert.deepEqual(openTaskSteps(`## Task list\n* [pending] star bullet\n## Next\n- [pending] another section`), ['* [pending] star bullet'])
+})
+
+test('openTaskSteps: tolerates the shapes a model plausibly writes', () => {
+  const shapes: Array<[string, string]> = [
+    ['## Task List\n- [pending] title case heading', '- [pending] title case heading'],
+    ['### Task list (open steps)\n- [pending] deeper, annotated heading', '- [pending] deeper, annotated heading'],
+    ['## Task list:\r\n- [pending] colon, CRLF\r\n', '- [pending] colon, CRLF'],
+    ['## Task list\n1. [in_progress] numbered', '1. [in_progress] numbered'],
+    ['## Task list\n2) [pending] numbered with paren', '2) [pending] numbered with paren'],
+    ['## Task list\n+ [in progress] plus bullet, spaced status', '+ [in progress] plus bullet, spaced status'],
+    ['## Task list\n- **[PENDING]** bold, upper case', '- **[PENDING]** bold, upper case'],
+    ['## Task list\n- `[pending]` code span', '- `[pending]` code span'],
+  ]
+  for (const [brief, step] of shapes) assert.deepEqual(openTaskSteps(brief), [step], brief)
+  assert.deepEqual(openTaskSteps('## Task list\n- [done] finished\n- [completed] too\n- [ ] no status'), [])
+  assert.deepEqual(openTaskSteps('## Task list\n- [pending] a\n## Notes\n- [pending] under another heading'), ['- [pending] a'])
+  assert.deepEqual(openTaskSteps('## Task lists of other teams\n- [pending] not ours'), [])
+})
+
+test('openTaskSteps: status subheadings stay inside the section, code blocks are not read', () => {
+  const grouped = '## Task list\n### In progress\n- [in_progress] a\n### Pending\n- [pending] b\n## Last exchanges\n- [pending] quoted'
+  assert.deepEqual(openTaskSteps(grouped), ['- [in_progress] a', '- [pending] b'])
+  const fenced = '## Task list\n- [in_progress] a\n  ```sh\n  # from the repo root\n  - [pending] not a step\n  ```\n- [pending] b'
+  assert.deepEqual(openTaskSteps(fenced), ['- [in_progress] a', '- [pending] b'])
+  assert.deepEqual(openTaskSteps('```\n## Task list\n- [pending] an example\n```'), [], 'a heading inside a code block is not the section')
 })
 
 test('touch: a failed spawn keeps this session open and the menu alive', () => {

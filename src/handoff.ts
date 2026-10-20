@@ -109,15 +109,57 @@ export function wantsHandoff(e: Eligibility, config: Config): boolean {
   )
 }
 
+/**
+ * The brief's section that carries the session's task list. The new session
+ * rebuilds its own list from it, so the plan continues instead of restarting.
+ */
+export const TASK_LIST_HEADING = '## Task list'
+
 export function handoffMessage(marker: string, path: string): string {
   return (
     `${marker} Handoff: this idle session's prompt cache is about to expire. The user may continue in a NEW ` +
-    `session that has never seen this conversation. Write a self-contained brief for it to ${path} with the ` +
-    `Write tool: the user's goal and every open request; decisions made and why, and what was ruled out; the ` +
-    `current state of the work and of any plan or task list; files, branches and commands that matter; open ` +
-    `questions; the exact next step. Then add the last few exchanges, condensed. Change nothing else. ` +
+    `session that has never seen this conversation. If this session has a task list, first bring it up to date ` +
+    `with TaskUpdate (or TodoWrite, if that is your task tool): finished steps completed, the current one ` +
+    `in_progress. Then write a self-contained brief ` +
+    `for the new session to ${path} with the Write tool: the user's goal and every open request; decisions made ` +
+    `and why, and what was ruled out; the current state of the work and of any plan; files, branches and ` +
+    `commands that matter; open questions; the exact next step. Under the heading "${TASK_LIST_HEADING}" list ` +
+    `every open step in order, one per line as "- [in_progress] subject — what is left" or "- [pending] ...", ` +
+    `or write "none". Then add the last few exchanges, condensed, under the heading "## Last exchanges". ` +
+    `Change nothing else. ` +
     `Then reply with exactly "ok".`
   )
+}
+
+/** The task-list heading at any level and in any case, maybe annotated ("## Task List (open steps)"). */
+const TASK_LIST_LINE = /^(#{1,6})\s+task list\b/i
+/** A heading; one of the task list's level or higher ends the section, deeper ones group its steps. */
+const HEADING_LINE = /^(#{1,6})\s/
+/** A code fence: what is between two of them is quoted, not structure. */
+const FENCE_LINE = /^(?:```|~~~)/
+/**
+ * An open step as a model plausibly writes it: a -, *, + or numbered item whose status, maybe bold or in a
+ * code span, is pending or in progress in any spelling. Completed steps and bare checkboxes do not count.
+ */
+const OPEN_STEP_LINE = /^\s*(?:[-*+]|\d+[.)])\s+(?:\*\*|`)?\[(?:pending|in[ _-]?progress)\]/i
+
+/** Open steps (pending, in_progress) listed under the brief's task-list heading, trimmed. */
+export function openTaskSteps(brief: string): string[] {
+  const steps: string[] = []
+  let fenced = false
+  let level = 0 // heading level of the task list once found; 0 = not in the section yet
+  for (const line of brief.split('\n').map((l) => l.trim())) {
+    if (FENCE_LINE.test(line)) { fenced = !fenced; continue }
+    if (fenced) continue
+    if (!level) {
+      level = TASK_LIST_LINE.exec(line)?.[1].length ?? 0
+      continue
+    }
+    const heading = HEADING_LINE.exec(line)
+    if (heading && heading[1].length <= level) break
+    if (OPEN_STEP_LINE.test(line)) steps.push(line)
+  }
+  return steps
 }
 
 export function requestHandoff(home: string, state: SessionState, now: number): string {
@@ -227,10 +269,16 @@ function writeContinue(home: string, rec: HandoffRecord): string {
   const brief = readFileSync(rec.briefPath, 'utf8').trim()
   const held = rec.heldPrompt?.trim()
   const tail = held ? `\n\n## The user's message on return\n\n${held}\n` : '\n'
+  // The steps themselves, not a pointer to the section: it may list finished ones too.
+  const steps = openTaskSteps(brief)
+  const restore = steps.length
+    ? `\n\nBefore anything else, restore the task list: create these open steps with TaskCreate (or TodoWrite, ` +
+      `if that is your task tool), in this order, then mark the in_progress one:\n\n${steps.join('\n')}`
+    : ''
   writeFileSync(
     path,
     `${brief}\n\n(Continued from session ${rec.sessionId}; its full transcript is ${rec.transcriptPath}. ` +
-      `Read it only when a detail is missing.)${tail}`,
+      `Read it only when a detail is missing.)${restore}${tail}`,
   )
   return path
 }
