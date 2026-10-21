@@ -15,7 +15,7 @@ import { readIdleSeconds } from '../src/presence.ts'
 import { formatReport, summarize } from '../src/report.ts'
 import { runSkipIf } from '../src/veto.ts'
 
-const VERSION = '0.3.3'
+const VERSION = '0.3.4'
 
 const USAGE = `cache-keeper ${VERSION} — keep an idle Claude Code session's prompt cache warm
 
