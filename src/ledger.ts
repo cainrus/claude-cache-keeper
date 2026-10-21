@@ -9,9 +9,12 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { SKIP_REASONS, type SkipReason } from './policy.ts'
 
-/** The policy's reasons, then the external `skipIf` veto (see veto.ts). */
-export const REFUSAL_REASONS = [...SKIP_REASONS, 'skip-if'] as const
-export type RefusalReason = SkipReason | 'skip-if'
+/**
+ * The policy's reasons, then the external `skipIf` answers (see veto.ts): `skip-if` = do not ping,
+ * `holder` = do not ping, the session's holder wants a handoff instead.
+ */
+export const REFUSAL_REASONS = [...SKIP_REASONS, 'skip-if', 'holder'] as const
+export type RefusalReason = SkipReason | 'skip-if' | 'holder'
 
 export type LedgerEvent =
   | 'ping'

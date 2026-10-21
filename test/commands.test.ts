@@ -192,7 +192,7 @@ test('wake: a skipIf veto refuses the ping without spending any budget', () => {
   const seen: unknown[] = []
   ctx.skipIf = (facts) => {
     seen.push(facts)
-    return true
+    return 'skip'
   }
   assert.equal(wake({ session_id: SID }, ctx), 0)
   assert.deepEqual(ctx.errors, [])
@@ -208,17 +208,17 @@ test('wake: a skipIf veto refuses the ping without spending any budget', () => {
 test('wake: skipIf answering no lets the ping through', () => {
   const { config } = setup()
   const ctx = makeCtx(config, T0 + WARM_ENOUGH, 30)
-  ctx.skipIf = () => false
+  ctx.skipIf = () => 'ping'
   assert.equal(wake({ session_id: SID }, ctx), 2)
 })
 
-test('wake: skipIf is asked only when the policy would ping', () => {
+test('wake: skipIf is asked only when a ping or a handoff would go out', () => {
   const { home, config } = setup()
   let asked = 0
   const ctx = makeCtx(config, T0 + WARM_ENOUGH, T.awaySec + 1)
   ctx.skipIf = () => {
     asked++
-    return true
+    return 'skip'
   }
   assert.equal(wake({ session_id: SID }, ctx), 0)
   assert.equal(asked, 0)

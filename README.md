@@ -66,11 +66,14 @@ Claude Code 2.1.281, background session (`claude --bg`), hook declared in `.clau
 | 6 | `maxPings` already spent in this idle stretch | `budget-spent` | 4 |
 | 7 | the previous ping missed the cache | `oracle-miss` | — |
 | 8 | the `skipIf` command exits 0 | `skip-if` | not set |
+| 9 | the `skipIf` command exits 3 and no [handoff](#handoff) is due | `holder` | not set |
 
 - **`skipIf`** is the hook for knowledge the keeper does not have: that a session's task is finished, handed off or
-  not worth coming back to. It runs through `/bin/sh` only for a ping that passed every other row, with
-  `CACHE_KEEPER_SESSION_ID`, `CACHE_KEEPER_TRANSCRIPT_PATH` and `CACHE_KEEPER_LAST_PROMPT_AT` (ISO, empty when
-  unknown) in its environment. Only exit 0 skips; a failing, missing or slow (> 5 s) command lets the ping out, so a
+  not worth coming back to. It runs through `/bin/sh` only for a ping that passed every other row (or a handoff that
+  is due), with `CACHE_KEEPER_SESSION_ID`, `CACHE_KEEPER_TRANSCRIPT_PATH` and `CACHE_KEEPER_LAST_PROMPT_AT` (ISO,
+  empty when unknown) in its environment. Exit 0 skips. Exit 3 says *someone else holds this session and would rather
+  continue in a new one than keep this one warm* (an orchestrator that started it): no ping, and a
+  [handoff](#handoff) with no menu when one is due. A failing, missing or slow (> 5 s) command lets the ping out, so a
   broken probe falls back to the keeper's own behaviour. Compare `LAST_PROMPT_AT` with your own "done" timestamp to
   let a session be kept again once someone writes to it after the fact.
 - **Presence** is macOS `HIDIdleTime`, which keeps counting through a closed lid or a locked screen. Elsewhere, or
@@ -125,7 +128,7 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | `maxPings` | `CACHE_KEEPER_MAX_PINGS` | `4` | pings per idle stretch |
 | `hitRatio` | `CACHE_KEEPER_HIT_RATIO` | `0.9` | wake turn counts as a hit at `read / (read + write) ≥` this |
 | `prices` | — | opus 5, sonnet 3, haiku 1 | USD per million base input tokens, for `report` |
-| `skipIf` | `CACHE_KEEPER_SKIP_IF` | — | shell command asked before each ping; exit 0 skips it (see [How it decides](#how-it-decides)) |
+| `skipIf` | `CACHE_KEEPER_SKIP_IF` | — | shell command asked before each ping or due handoff; exit 0 skips, exit 3 hands off (see [How it decides](#how-it-decides)) |
 | — | `CACHE_KEEPER_IDLE_SEC` | — | override the presence probe (a number of seconds, or `unknown`) |
 | `handoff.enabled` | `CACHE_KEEPER_HANDOFF` | `false` | write a brief before the cache dies and ask before a prompt hits it cold (see [Handoff](#handoff)) |
 | `handoff.*` | | | see [Handoff](#handoff) |
@@ -163,6 +166,12 @@ Your message is held and is back in the input box. Nothing was sent to the model
   Without `spawnCommand`, only the file is written.
 - Anything else replaces the held message and shows the menu again.
 - Back before the cache expired: nothing is intercepted and the brief is retired.
+
+A session whose `skipIf` answered exit 3 (it has a holder) is not asked: the brief is written at the point the keeper
+would have pinged, and the first prompt into the cold cache goes straight to `2`. Its sender is a session, not a person
+at the input box, so there is nobody to read a menu. `skipIf` is asked again at that prompt: if it no longer answers 3
+(the holder left or ended), the prompt gets the menu. So do a gate turn (it may be a task notification of a session in
+the middle of its work) and any prompt after a failed start.
 
 Skills (`/simplify`) go through `UserPromptSubmit` like any prompt, but `!` commands and built-in slash commands never
 do (measured on Claude Code 2.1.301), so the plugin also ships a small hooks module, `hooks/gate.ts`, that asks `cache-keeper gate` where such

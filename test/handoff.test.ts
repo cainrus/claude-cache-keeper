@@ -195,6 +195,123 @@ test('touch: `2` spawns a new session from brief + held message, then closes thi
   assert.equal(loadRecord(home, SID)!.choice, 'new')
 })
 
+// --- a holder asks for the handoff (`skipIf` exit 3) ---------------------------------------------
+
+/** A due ping (budget not spent) on a session whose holder answers `handoff`. */
+function heldSession(env: Record<string, string>, extra: Partial<ReturnType<typeof newSession>> = {}) {
+  const s = idleSession(env, { pingsSoFar: 0, ...extra })
+  const wakeAt = T0 + 52 * MIN
+  const ctx = makeCtx(s.config, wakeAt, 30)
+  ctx.skipIf = () => 'handoff'
+  return { ...s, ctx, wakeAt }
+}
+
+test('wake: a holder that answers handoff gets a brief instead of the ping, marked auto', () => {
+  const { home, ctx } = heldSession(HANDOFF_ENV)
+  assert.equal(wake({ session_id: SID }, ctx), 2)
+  assert.ok(ctx.errors[0].startsWith(WAKE_MARKER))
+  assert.match(ctx.errors[0], /NEW session/)
+  const s = loadSession(home, SID)!
+  assert.equal(s.pingsSoFar, 0, 'a brief is not a keep-alive ping')
+  assert.equal(s.handoffPending, true)
+  const rec = loadRecord(home, SID)!
+  assert.equal(rec.status, 'requested')
+  assert.equal(rec.auto, true)
+})
+
+test('wake: a holder handoff that is not due (small, off, already asked) is a skip, never a ping', () => {
+  const cases: Array<[string, Record<string, string>, object]> = [
+    ['handoff off', {}, {}],
+    ['small context', HANDOFF_ENV, { ctxTokens: 60_000 }],
+    ['already asked', HANDOFF_ENV, { handoffRequested: true }],
+  ]
+  for (const [name, env, extra] of cases) {
+    const { home, ctx } = heldSession(env, extra)
+    assert.equal(wake({ session_id: SID }, ctx), 0, name)
+    assert.deepEqual(ctx.errors, [], name)
+    const last = readLedger(home).at(-1)!
+    assert.equal(last.event, 'skip', name)
+    assert.equal(last.reason, 'holder', name)
+  }
+})
+
+test('wake: a policy refusal on a held session hands off as auto too; skip still vetoes it', () => {
+  const held = idleSession(HANDOFF_ENV)
+  const ctx = makeCtx(held.config, T0 + 52 * MIN)
+  ctx.skipIf = () => 'handoff'
+  assert.equal(wake({ session_id: SID }, ctx), 2)
+  assert.equal(loadRecord(held.home, SID)!.auto, true)
+
+  const plain = idleSession(HANDOFF_ENV)
+  const asked = makeCtx(plain.config, T0 + 52 * MIN)
+  asked.skipIf = () => 'ping'
+  assert.equal(wake({ session_id: SID }, asked), 2)
+  assert.equal(loadRecord(plain.home, SID)!.auto, undefined, 'no holder: the human gets the menu')
+
+  const done = idleSession(HANDOFF_ENV)
+  const finished = makeCtx(done.config, T0 + 52 * MIN)
+  finished.skipIf = () => 'skip'
+  assert.equal(wake({ session_id: SID }, finished), 0)
+  assert.equal(loadRecord(done.home, SID), undefined)
+})
+
+/** A held session whose auto brief is written and ready; `back` is a touch into its cold cache. */
+function autoReady(spawnOk = true, holderNow: 'handoff' | 'ping' = 'handoff') {
+  const { home, config, ctx, wakeAt, transcript } = heldSession(SPAWN_ENV)
+  assert.equal(wake({ session_id: SID }, ctx), 2)
+  writeFileSync(briefPath(home, SID), BRIEF)
+  writeFileSync(transcript, `${readFileSync(transcript, 'utf8')}${assistantLine({ at: wakeAt + 5000, read: PRE, write: 900 })}\n`)
+  record({ session_id: SID, transcript_path: transcript }, makeCtx(config, wakeAt + 6000))
+  assert.equal(loadRecord(home, SID)!.status, 'ready')
+  const { ctx: back, out } = touchCtx(config, wakeAt + 2 * HOUR, spawnOk)
+  back.skipIf = () => holderNow
+  return { home, back, out }
+}
+
+test('touch: an auto handoff whose holder has gone since the wake shows the menu, never closes', () => {
+  const { back, out } = autoReady(true, 'ping')
+  touch({ session_id: SID, prompt: 'hi' }, back)
+  assert.equal(out.spawns.length, 0)
+  assert.deepEqual(out.closes, [])
+  assert.match(out.json[0].reason, /gone cold/)
+})
+
+test('gate: an auto handoff is not taken on a gate turn (it may be a task notification): the menu', () => {
+  const { home, back, out } = autoReady()
+  gate({ session_id: SID, prompt: '<task-notification>done</task-notification>', gate_turn: true }, back)
+  assert.equal(out.spawns.length, 0)
+  assert.deepEqual(out.closes, [])
+  // The menu is shown: its answer decides, the holder's auto no longer does.
+  touch({ session_id: SID, prompt: '1' }, back)
+  assert.equal(out.spawns.length, 0)
+  assert.equal(loadRecord(home, SID)!.choice, 'here')
+})
+
+test('touch: a failed auto start drops auto, so the next prompt gets the menu and its way out', () => {
+  const { home, back, out } = autoReady(false)
+  touch({ session_id: SID, prompt: 'status?' }, back)
+  assert.equal(out.spawns.length, 1)
+  assert.match(out.json[0].reason, /did not start/)
+  assert.equal(loadRecord(home, SID)!.auto, undefined)
+  touch({ session_id: SID, prompt: 'and now?' }, back)
+  assert.equal(out.spawns.length, 1, 'not spawned again')
+  assert.match(out.json[1].reason, /gone cold/)
+  touch({ session_id: SID, prompt: '1' }, back)
+  assert.equal(loadRecord(home, SID)!.choice, 'here')
+})
+
+test('touch: a prompt into the cold cache of an auto handoff starts the new session at once, no menu', () => {
+  const { home, back, out } = autoReady()
+  touch({ session_id: SID, prompt: 'status of the build?' }, back)
+  assert.equal(out.spawns.length, 1)
+  assert.match(readFileSync(out.spawns[0].env.CACHE_KEEPER_BRIEF, 'utf8'), /## The user's message on return\n\nstatus of the build\?/)
+  assert.deepEqual(out.closes, [SID])
+  assert.equal(out.json.length, 1)
+  assert.equal(out.json[0].decision, 'block')
+  assert.doesNotMatch(out.json[0].reason, /gone cold/, 'no menu')
+  assert.equal(loadRecord(home, SID)!.choice, 'new')
+})
+
 const TASKS_BRIEF =
   `${BRIEF}\n\n## Task list\n\n- [completed] Read the design\n- [in_progress] Write the handoff test — the spawn case is left\n` +
   `- [pending] Release 0.3.1\n\n## Last exchanges\n\nok`

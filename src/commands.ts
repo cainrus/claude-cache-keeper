@@ -12,7 +12,7 @@
 
 import type { Config } from './config.ts'
 import { handoffMessage, interceptPrompt, requestHandoff, settleHandoff, wantsHandoff, type HandoffIO } from './handoff.ts'
-import { appendLedger } from './ledger.ts'
+import { appendLedger, type RefusalReason } from './ledger.ts'
 import { takeNotices } from './notices.ts'
 import { decide, isAtKeyboard } from './policy.ts'
 import {
@@ -24,7 +24,7 @@ import {
   saveSession,
 } from './state.ts'
 import { lastMainUsage } from './transcript.ts'
-import type { SessionFacts } from './veto.ts'
+import type { SessionFacts, Verdict } from './veto.ts'
 
 export const WAKE_MARKER = '[cache-keeper] Prompt-cache keep-alive.'
 export const WAKE_MESSAGE = `${WAKE_MARKER} Reply with exactly "ok". No tools, no commentary.`
@@ -51,8 +51,8 @@ export interface Ctx {
   stderr: (text: string) => void
   /** Blocking sleep, injectable for tests. Defaults to Atomics.wait. */
   sleepMs?: (ms: number) => void
-  /** The `skipIf` veto; asked only when the policy would ping. true = skip. */
-  skipIf?: (facts: SessionFacts) => boolean
+  /** The `skipIf` veto; asked only when a ping or a handoff would go out. */
+  skipIf?: (facts: SessionFacts) => Verdict
   /** Hook stdout (UserPromptSubmit JSON). */
   stdout?: (text: string) => void
   /** Spawn and close for the handoff menu (see handoff-run.ts). */
@@ -195,37 +195,43 @@ export function wake(input: HookInput, ctx: Ctx): number {
 
   const base = { t: iso(ctx.now), sessionId: sid, ctxTokens: state.ctxTokens, ageSec, model: state.model, awaySeconds }
   const facts = { sessionId: sid, transcriptPath: state.transcriptPath, lastPromptAt: state.lastHumanAt }
+  // The keeper is letting a warm cache go: spend its last warm turn on a summary instead.
+  const handoffDue = (reason: RefusalReason): boolean =>
+    state.transcriptPath !== undefined &&
+    wantsHandoff(
+      {
+        reason,
+        ageSec,
+        ctxTokens: state.ctxTokens,
+        lastPingHit: state.lastPingHit,
+        alreadyRequested: state.handoffRequested === true,
+      },
+      ctx.config,
+    )
+  const startHandoff = (auto: boolean): number => {
+    const path = requestHandoff(home, state, ctx.now, auto)
+    state.pendingPing = true
+    state.handoffRequested = true
+    state.handoffPending = true
+    state.lastPingAt = ctx.now
+    saveSession(home, state)
+    ctx.stderr(`${handoffMessage(WAKE_MARKER, path)}\n`)
+    return 2
+  }
   if (!decision.ping) {
-    // The keeper is letting a warm cache go: spend its last warm turn on a summary instead.
-    const handoff =
-      state.transcriptPath !== undefined &&
-      wantsHandoff(
-        {
-          reason: decision.reason,
-          ageSec,
-          ctxTokens: state.ctxTokens,
-          lastPingHit: state.lastPingHit,
-          alreadyRequested: state.handoffRequested === true,
-        },
-        ctx.config,
-      ) &&
-      !ctx.skipIf?.(facts)
-    if (handoff) {
-      const path = requestHandoff(home, state, ctx.now)
-      state.pendingPing = true
-      state.handoffRequested = true
-      state.handoffPending = true
-      state.lastPingAt = ctx.now
-      saveSession(home, state)
-      ctx.stderr(`${handoffMessage(WAKE_MARKER, path)}\n`)
-      return 2
+    if (handoffDue(decision.reason)) {
+      const verdict = ctx.skipIf?.(facts) ?? 'ping'
+      if (verdict !== 'skip') return startHandoff(verdict === 'handoff')
     }
     appendLedger(home, { ...base, event: 'skip', reason: decision.reason })
     return 0
   }
   // Last, so the command runs only for a ping that would really go out.
-  if (ctx.skipIf?.(facts)) {
-    appendLedger(home, { ...base, event: 'skip', reason: 'skip-if' })
+  const verdict = ctx.skipIf?.(facts) ?? 'ping'
+  if (verdict !== 'ping') {
+    // 'handoff': someone else holds this session and does not want it kept warm.
+    if (verdict === 'handoff' && handoffDue('holder')) return startHandoff(true)
+    appendLedger(home, { ...base, event: 'skip', reason: verdict === 'handoff' ? 'holder' : 'skip-if' })
     return 0
   }
 
@@ -255,7 +261,9 @@ export function touch(input: HookInput, ctx: Ctx, gate = false): number {
   const state = loadSession(home, sid) ?? newSession(sid)
   if (input.transcript_path) state.transcriptPath = input.transcript_path
 
-  const held = interceptPrompt(input.prompt ?? '', state, ctx.config, ctx.now, ctx.handoffIO, gate)
+  const stillHeld = (): boolean =>
+    ctx.skipIf?.({ sessionId: sid, transcriptPath: state.transcriptPath, lastPromptAt: state.lastHumanAt }) === 'handoff'
+  const held = interceptPrompt(input.prompt ?? '', state, ctx.config, ctx.now, ctx.handoffIO, gate, stillHeld)
   if (held?.kind === 'block') {
     if (gate && input.gate_turn) {
       state.gateTurnAt = ctx.now

@@ -7,15 +7,16 @@ import { SID, tempHome } from './helpers.ts'
 
 const facts = { sessionId: SID, transcriptPath: '/t/x.jsonl', lastPromptAt: Date.parse('2026-01-01T10:00:00.000Z') }
 
-test('skipIf: exit 0 vetoes the ping, any other exit lets it through', () => {
-  assert.equal(runSkipIf('exit 0', facts), true)
-  assert.equal(runSkipIf('exit 1', facts), false)
-  assert.equal(runSkipIf('exit 7', facts), false)
+test('skipIf: exit 0 vetoes the ping, exit 3 asks for a handoff, any other exit lets it through', () => {
+  assert.equal(runSkipIf('exit 0', facts), 'skip')
+  assert.equal(runSkipIf('exit 3', facts), 'handoff')
+  assert.equal(runSkipIf('exit 1', facts), 'ping')
+  assert.equal(runSkipIf('exit 7', facts), 'ping')
 })
 
 test('skipIf: a command that cannot run or hangs never vetoes — the ping goes out as before', () => {
-  assert.equal(runSkipIf('/nonexistent/probe', facts), false)
-  assert.equal(runSkipIf('sleep 5', facts, 200), false)
+  assert.equal(runSkipIf('/nonexistent/probe', facts), 'ping')
+  assert.equal(runSkipIf('sleep 5', facts, 200), 'ping')
 })
 
 test('skipIf: the session facts reach the command as env vars', () => {

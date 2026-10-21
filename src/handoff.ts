@@ -38,14 +38,13 @@
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Config } from './config.ts'
-import { appendLedger } from './ledger.ts'
+import { appendLedger, type RefusalReason } from './ledger.ts'
 import { postNotice } from './notices.ts'
-import type { SkipReason } from './policy.ts'
 import { basePrice, MULT } from './report.ts'
 import { readJson, writeJsonAtomic, type SessionState } from './state.ts'
 
-/** Skip reasons after which the keeper would let a still-warm cache die. */
-export const HANDOFF_REASONS: readonly SkipReason[] = ['away', 'away-budget-spent', 'budget-spent']
+/** Refusals after which the keeper would let a still-warm cache die. */
+export const HANDOFF_REASONS: readonly RefusalReason[] = ['away', 'away-budget-spent', 'budget-spent', 'holder']
 
 /** Shorter than this is not a brief. */
 export const MIN_BRIEF_CHARS = 400
@@ -69,9 +68,14 @@ export interface HandoffRecord {
   heldPrompt?: string
   menuShownAt?: number
   usedAt?: number
-  /** warm = came back before the cache died; here / new = picked in the menu. */
+  /** warm = came back before the cache died; here / new = picked in the menu, or by `auto`. */
   choice?: 'warm' | 'here' | 'new'
   continuePath?: string
+  /**
+   * The session's holder asked for the handoff (`skipIf` exit 3): a prompt into the cold cache goes
+   * to a new session without the menu. The holder is a session, not a person at the input box.
+   */
+  auto?: true
 }
 
 const dir = (home: string) => join(home, 'handoffs')
@@ -88,7 +92,7 @@ function saveRecord(home: string, rec: HandoffRecord): void {
 }
 
 export interface Eligibility {
-  reason: SkipReason
+  reason: RefusalReason
   ageSec: number
   ctxTokens: number
   lastPingHit: boolean | null
@@ -162,7 +166,7 @@ export function openTaskSteps(brief: string): string[] {
   return steps
 }
 
-export function requestHandoff(home: string, state: SessionState, now: number): string {
+export function requestHandoff(home: string, state: SessionState, now: number, auto = false): string {
   const sid = state.sessionId
   const path = briefPath(home, sid)
   rmSync(path, { force: true })
@@ -174,6 +178,7 @@ export function requestHandoff(home: string, state: SessionState, now: number): 
     ...(state.model ? { model: state.model } : {}),
     transcriptPath: state.transcriptPath!,
     briefPath: path,
+    ...(auto ? { auto: true as const } : {}),
   })
   appendLedger(home, { t: new Date(now).toISOString(), sessionId: sid, event: 'handoff-request', ctxTokens: state.ctxTokens })
   return path
@@ -287,8 +292,9 @@ function startNew(rec: HandoffRecord, config: Config, io: HandoffIO | undefined,
   const home = config.home
   const path = writeContinue(home, rec)
   const { spawnCommand, closeAfterSpawn } = config.handoff
+  // A failed start drops `auto`: the next prompt gets the menu and its way out (`1`), not this again.
   if (!spawnCommand || !io) {
-    saveRecord(home, { ...rec, continuePath: path })
+    saveRecord(home, { ...rec, auto: undefined, continuePath: path })
     return { kind: 'block', reason: `cache-keeper: start a new session from ${path} — this one stays as it is.` }
   }
   const cwd = cwdOf(rec.transcriptPath)
@@ -301,7 +307,7 @@ function startNew(rec: HandoffRecord, config: Config, io: HandoffIO | undefined,
   const out = r.output.trim().slice(-OUTPUT_CHARS)
   const t = new Date(now).toISOString()
   if (!r.ok) {
-    saveRecord(home, { ...rec, continuePath: path })
+    saveRecord(home, { ...rec, auto: undefined, continuePath: path })
     appendLedger(home, { t, sessionId: rec.sessionId, event: 'handoff-failed', failure: 'spawn' })
     return {
       kind: 'block',
@@ -328,6 +334,7 @@ export function interceptPrompt(
   now: number,
   io?: HandoffIO,
   gate = false,
+  stillHeld?: () => boolean,
 ): Interception | undefined {
   const home = config.home
   const rec = loadRecord(home, state.sessionId)
@@ -341,6 +348,10 @@ export function interceptPrompt(
     return { kind: 'pass' }
   }
 
+  // Asked again now, not trusted from the wake: the holder may have left or ended since. A gate turn
+  // may be a task notification of a session mid-work, never a reason to close it: the menu then.
+  if (rec.auto && !gate && stillHeld?.()) return startNew({ ...rec, heldPrompt: prompt }, config, io, now)
+
   const text = prompt.trim()
   if (rec.heldPrompt !== undefined) {
     if (text === '2') return startNew(rec, config, io, now)
@@ -352,7 +363,8 @@ export function interceptPrompt(
         : { kind: 'pass', context: `The user's message, held while cache-keeper asked where to continue:\n\n${rec.heldPrompt}` }
     }
   }
-  const held = { ...rec, heldPrompt: prompt, menuShownAt: now }
+  // Once the menu is shown, its answer decides: `auto` would take the reply (`1`, `2`) as the message.
+  const held = { ...rec, auto: undefined, heldPrompt: prompt, menuShownAt: now }
   saveRecord(home, held)
   return { kind: 'block', reason: menu(held, state, config, now, gate) }
 }
