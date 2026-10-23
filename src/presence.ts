@@ -8,6 +8,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs'
 
 /** `"HIDIdleTime" = 123456789000` -> whole seconds; null if absent or unparseable. */
 export function parseIdleSeconds(ioregOutput: string): number | null {
@@ -47,5 +48,34 @@ export function readIdleSeconds(opts: ProbeOptions = {}): number | null {
     return parseIdleSeconds((opts.exec ?? defaultExec)('ioreg', ['-c', 'IOHIDSystem', '-d', '4']))
   } catch {
     return null
+  }
+}
+
+/** The tail of a transcript is enough: every line Claude Code writes carries the session kind. */
+const KIND_TAIL_BYTES = 16_384
+
+/**
+ * Is this a background session, one that nobody watches at an input box? Claude Code starts
+ * background sessions with `CLAUDE_JOB_DIR` and stamps their transcript lines `"sessionKind":"bg"`;
+ * hooks inherit the first, the second is the fallback. `CACHE_KEEPER_BACKGROUND=0|1` overrides both.
+ */
+export function isBackgroundSession(env: NodeJS.ProcessEnv = process.env, transcriptPath?: string): boolean {
+  const forced = env.CACHE_KEEPER_BACKGROUND
+  if (forced === '0' || forced === '1') return forced === '1'
+  if (env.CLAUDE_JOB_DIR) return true
+  if (!transcriptPath) return false
+  try {
+    const fd = openSync(transcriptPath, 'r')
+    try {
+      const size = fstatSync(fd).size
+      const len = Math.min(size, KIND_TAIL_BYTES)
+      const buf = Buffer.alloc(len)
+      readSync(fd, buf, 0, len, size - len)
+      return buf.toString('utf8').includes('"sessionKind":"bg"')
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return false
   }
 }

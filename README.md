@@ -173,6 +173,13 @@ at the input box, so there is nobody to read a menu. `skipIf` is asked again at 
 (the holder left or ended), the prompt gets the menu. So do a gate turn (it may be a task notification of a session in
 the middle of its work) and any prompt after a failed start.
 
+A **background session** (Claude Code set `CLAUDE_JOB_DIR` for it, or its transcript says `"sessionKind":"bg"`;
+`CACHE_KEEPER_BACKGROUND=0|1` overrides) has nobody at its input box either. There a message from another session
+(`<cross-session-message …>`) or a `<task-notification>` is never held: it continues here and pays the rewrite, as
+the work it carries was asked for, and the ledger records `handoff-here` with `detail: "unattended"`. A held session
+does not hand off on it either, since the sender would go on writing to a closed session. A message the menu held
+before reaches the model with it (as a notice on a gate turn). Anything else typed there still gets the menu.
+
 Skills (`/simplify`) go through `UserPromptSubmit` like any prompt, but `!` commands and built-in slash commands never
 do (measured on Claude Code 2.1.301), so the plugin also ships a small hooks module, `hooks/gate.ts`, that asks `cache-keeper gate` where such
 input does reach the model, and shows the same menu:

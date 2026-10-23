@@ -57,6 +57,8 @@ export interface Ctx {
   stdout?: (text: string) => void
   /** Spawn and close for the handoff menu (see handoff-run.ts). */
   handoffIO?: HandoffIO
+  /** Is this a background session, nobody at its input box (presence.ts)? Asked only at the menu. */
+  background?: (transcriptPath?: string) => boolean
 }
 
 const blockingSleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -263,7 +265,8 @@ export function touch(input: HookInput, ctx: Ctx, gate = false): number {
 
   const stillHeld = (): boolean =>
     ctx.skipIf?.({ sessionId: sid, transcriptPath: state.transcriptPath, lastPromptAt: state.lastHumanAt }) === 'handoff'
-  const held = interceptPrompt(input.prompt ?? '', state, ctx.config, ctx.now, ctx.handoffIO, gate, stillHeld)
+  const background = ctx.background?.(state.transcriptPath) ?? false
+  const held = interceptPrompt(input.prompt ?? '', state, ctx.config, ctx.now, ctx.handoffIO, gate, stillHeld, background)
   if (held?.kind === 'block') {
     if (gate && input.gate_turn) {
       state.gateTurnAt = ctx.now

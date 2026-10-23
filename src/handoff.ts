@@ -226,6 +226,17 @@ export type Interception =
 
 const CONTINUE_HERE = new Set(['1', 'force'])
 
+/**
+ * A message another session or a finished task sent, not something a person typed: Claude Code
+ * hands it over as a `<cross-session-message …>` or a `<task-notification>` block, maybe after its
+ * one-line "Another Claude session sent a message:" preamble.
+ */
+const MACHINE_MESSAGE = /^\s*(?:Another Claude session sent a message:\s*)?<(?:cross-session-message|task-notification)[\s>]/
+
+export function isMachineMessage(prompt: string): boolean {
+  return MACHINE_MESSAGE.test(prompt)
+}
+
 function idleText(ms: number): string {
   const min = Math.floor(ms / 60_000)
   return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`
@@ -324,6 +335,38 @@ function startNew(rec: HandoffRecord, config: Config, io: HandoffIO | undefined,
 }
 
 /**
+ * Continue a background session here on a peer message or task notification. A message the menu
+ * held before goes to the model with it, so passing this one does not drop that one: as context on
+ * a prompt, as a notice for the next prompt on a gate turn (a gate cannot add context).
+ */
+function continueUnattended(
+  rec: HandoffRecord,
+  state: SessionState,
+  config: Config,
+  now: number,
+  gate: boolean,
+  prompt: string,
+): Interception {
+  const home = config.home
+  saveRecord(home, { ...rec, status: 'used', choice: 'here', usedAt: now })
+  appendLedger(home, {
+    t: new Date(now).toISOString(),
+    sessionId: rec.sessionId,
+    event: 'handoff-here',
+    ctxTokens: state.ctxTokens,
+    detail: 'unattended',
+  })
+  const held = rec.heldPrompt?.trim()
+  if (!held || held === prompt.trim()) return { kind: 'pass' }
+  const text = `A message held by cache-keeper while this session's cache was cold, never sent to the model:\n\n${held}`
+  if (gate) {
+    postNotice(home, text, now, [rec.sessionId])
+    return { kind: 'pass' }
+  }
+  return { kind: 'pass', context: text }
+}
+
+/**
  * A real prompt arrives: undefined = nothing to do with handoff. Called by
  * touch before it records the prompt; a block means the prompt never ran.
  */
@@ -335,6 +378,7 @@ export function interceptPrompt(
   io?: HandoffIO,
   gate = false,
   stillHeld?: () => boolean,
+  background = false,
 ): Interception | undefined {
   const home = config.home
   const rec = loadRecord(home, state.sessionId)
@@ -347,6 +391,11 @@ export function interceptPrompt(
     saveRecord(home, { ...rec, status: 'used', choice: 'warm', usedAt: now })
     return { kind: 'pass' }
   }
+
+  // A background session has nobody at the input box to answer the menu: a held peer message or task
+  // notification would freeze it, the sender told "delivered". The work it carries was asked for, so
+  // it pays the cold turn here; handing off instead would leave the sender writing to a closed session.
+  if (background && isMachineMessage(prompt)) return continueUnattended(rec, state, config, now, gate, prompt)
 
   // Asked again now, not trusted from the wake: the holder may have left or ended since. A gate turn
   // may be a task notification of a session mid-work, never a reason to close it: the menu then.

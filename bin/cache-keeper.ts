@@ -11,7 +11,7 @@ import { loadConfig } from '../src/config.ts'
 import { realIO } from '../src/handoff-run.ts'
 import { buildHooks, shellQuote, waitCommand } from '../src/hooks.ts'
 import { readLedger } from '../src/ledger.ts'
-import { readIdleSeconds } from '../src/presence.ts'
+import { isBackgroundSession, readIdleSeconds } from '../src/presence.ts'
 import { formatReport, summarize } from '../src/report.ts'
 import { runSkipIf } from '../src/veto.ts'
 
@@ -81,6 +81,7 @@ function main(argv: string[]): number {
         stderr: (text) => process.stderr.write(text),
         stdout: (text) => process.stdout.write(text),
         handoffIO: realIO(config),
+        background: (transcriptPath) => isBackgroundSession(process.env, transcriptPath),
         ...(skipIf ? { skipIf: (facts) => runSkipIf(skipIf, facts) } : {}),
       }
       return hook(parseInput(readStdin()), ctx)
