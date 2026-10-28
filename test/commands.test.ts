@@ -280,6 +280,31 @@ test('touch: a real prompt resets the stretch and logs the resume', () => {
   assert.equal(resume.pings, 1)
 })
 
+test('record: the first turn after a pinged resume logs what its FIRST request paid', () => {
+  const { home, config, transcript } = setup()
+  wake({ session_id: SID }, makeCtx(config, T0 + WARM_ENOUGH))
+  appendFileSync(transcript, `${assistantLine({ at: T0 + WARM_ENOUGH + 1000, read: 91_000, write: 300 })}\n`)
+  record({ session_id: SID, transcript_path: transcript, stop_hook_active: true }, makeCtx(config, T0 + WARM_ENOUGH + 2000))
+
+  const back = T0 + WARM_ENOUGH + 10 * MIN
+  touch({ session_id: SID, prompt: 'back to work' }, makeCtx(config, back))
+  // The first request rewrote the prefix; the second reads that fresh write and would look like a hit.
+  appendFileSync(transcript, `${assistantLine({ at: back + 1000, read: 0, write: 91_000 })}\n`)
+  appendFileSync(transcript, `${assistantLine({ at: back + 5000, read: 91_000, write: 200 })}\n`)
+  record({ session_id: SID, transcript_path: transcript }, makeCtx(config, back + 6000))
+
+  const paid = readLedger(home).filter((e) => e.event === 'resume-paid')
+  assert.equal(paid.length, 1)
+  assert.equal(paid[0].cacheRead, 0)
+  assert.equal(paid[0].cacheWrite, 91_000)
+  assert.equal(loadSession(home, SID)!.resumeAt, undefined)
+
+  // Only the first turn after the resume is measured.
+  appendFileSync(transcript, `${assistantLine({ at: back + 9 * MIN, read: 91_500, write: 100 })}\n`)
+  record({ session_id: SID, transcript_path: transcript }, makeCtx(config, back + 9 * MIN + 500))
+  assert.equal(readLedger(home).filter((e) => e.event === 'resume-paid').length, 1)
+})
+
 test('touch: the wake turn\'s own prompt is ignored', () => {
   const { home, config } = setup()
   wake({ session_id: SID }, makeCtx(config, T0 + WARM_ENOUGH))

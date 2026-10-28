@@ -38,6 +38,11 @@ export interface SessionState {
    * turn still ends with a Stop, which must not read as a touched cache.
    */
   gateTurnAt?: number
+  /**
+   * Epoch ms of the real prompt that ended a pinged stretch. The next Stop logs
+   * what that turn's first request paid (`resume-paid`) and clears it.
+   */
+  resumeAt?: number
 }
 
 export interface AwayBudget {

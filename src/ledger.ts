@@ -20,6 +20,7 @@ export type LedgerEvent =
   | 'ping'
   | 'skip'
   | 'resume'
+  | 'resume-paid'
   | 'wake-hit'
   | 'wake-miss'
   | 'handoff-request'
@@ -41,7 +42,7 @@ export interface LedgerEntry {
   pings?: number
   /** resume: whether the last ping of the stretch hit the cache (null = unknown). */
   lastPingHit?: boolean | null
-  /** wake-hit / wake-miss: the wake turn's own usage. */
+  /** wake-hit / wake-miss: the wake turn's own usage. resume-paid: the resumed turn's first request. */
   inputTokens?: number
   cacheRead?: number
   cacheWrite?: number

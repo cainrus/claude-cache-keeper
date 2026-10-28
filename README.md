@@ -223,6 +223,8 @@ pings
 idle stretches with a ping
   resumed                        6
     while still warm             6
+    paid turn measured           6
+    held, not used               0
   abandoned                      4
 
 refusals                        38
@@ -233,15 +235,19 @@ refusals                        38
   budget-spent                   3
   oracle-miss                    1
 
-estimate at API list prices
+at API list prices (measured where paid, estimated elsewhere)
   rewrites avoided           $8.98
   ping cost                  $1.50
   balance                   +$7.47
 ```
 
-"Rewrites avoided" counts only stretches resumed while the held cache was still alive, valued as a 1h cache write
-of the whole context minus the read paid instead. On a subscription nothing is billed per token, but the same
-tokens count against usage limits.
+"Rewrites avoided" values each resumed stretch by what the first request of the resumed turn really paid: a 1h
+cache write of the whole context, minus that payment (`resume-paid` in the ledger). The first request, not the
+last: when it rewrites the context, every later request of the turn reads that fresh write and looks like a hit.
+A resume into a cache that was gone after all comes out at about zero, and "held, not used" counts those: pings
+that bought nothing. A resume with no measured payment (an older ledger, a transcript that never caught
+up) falls back to the estimate, counted only while the held cache was still alive. On a subscription nothing is
+billed per token, but the same tokens count against usage limits.
 
 ## Limitations
 

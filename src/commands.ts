@@ -23,7 +23,7 @@ import {
   saveAwayBudget,
   saveSession,
 } from './state.ts'
-import { lastMainUsage } from './transcript.ts'
+import { firstMainUsageSince, lastMainUsage } from './transcript.ts'
 import type { SessionFacts, Verdict } from './veto.ts'
 
 export const WAKE_MARKER = '[cache-keeper] Prompt-cache keep-alive.'
@@ -151,6 +151,23 @@ export function record(input: HookInput, ctx: Ctx): number {
         outputTokens: usage.outputTokens,
       })
     }
+  }
+
+  // The first real turn after a pinged stretch: log what it actually paid for the held prefix.
+  if (!closedWake && state.resumeAt !== undefined) {
+    const paid = usage && state.transcriptPath ? firstMainUsageSince(state.transcriptPath, state.resumeAt) : undefined
+    if (paid) {
+      appendLedger(home, {
+        t: iso(ctx.now),
+        sessionId: sid,
+        event: 'resume-paid',
+        model: paid.model,
+        inputTokens: paid.inputTokens,
+        cacheRead: paid.cacheRead,
+        cacheWrite: paid.cacheWrite,
+      })
+    }
+    delete state.resumeAt
   }
 
   const handoff = closedWake && state.handoffPending === true
@@ -287,6 +304,7 @@ export function touch(input: HookInput, ctx: Ctx, gate = false): number {
       model: state.model,
       ...(state.lastTurnEndAt !== undefined ? { ageSec: secondsBetween(state.lastTurnEndAt, ctx.now) } : {}),
     })
+    state.resumeAt = ctx.now
   }
 
   state.pingsSoFar = 0

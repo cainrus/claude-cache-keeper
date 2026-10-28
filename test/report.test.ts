@@ -2,9 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DEFAULT_PRICES } from '../src/config.ts'
 import type { LedgerEntry } from '../src/ledger.ts'
-import { basePrice, formatReport, MULT, savedUsd, summarize, wakeCostUsd } from '../src/report.ts'
+import { basePrice, formatReport, MULT, paidSavedUsd, savedUsd, summarize, wakeCostUsd } from '../src/report.ts'
 
-const cfg = { prices: DEFAULT_PRICES, cacheTtlSec: 3600 }
+const cfg = { prices: DEFAULT_PRICES, cacheTtlSec: 3600, hitRatio: 0.9 }
 const t = (m: number) => new Date(Date.UTC(2026, 0, 1, 10, m)).toISOString()
 
 test('basePrice matches the model family, falls back to default', () => {
@@ -61,6 +61,38 @@ test('summarize: counts, stretches, refusals and balance', () => {
   assert.equal(s.savedUsd, expectedSaved)
   assert.ok(Math.abs(s.pingCostUsd - expectedCost) < 1e-12)
   assert.ok(Math.abs(s.balanceUsd - (expectedSaved - expectedCost)) < 1e-12)
+})
+
+test('summarize: a measured resume replaces the estimate; a cold one is worth nothing', () => {
+  const opus = 'claude-opus-4-5'
+  const resume = (sid: string, m: number): LedgerEntry =>
+    ({ t: t(m), sessionId: sid, event: 'resume', pings: 1, lastPingHit: true, ageSec: 600, ctxTokens: 100_000, model: opus })
+  const L: LedgerEntry[] = [
+    // a: the held prefix was read back
+    { t: t(0), sessionId: 'a', event: 'ping' },
+    resume('a', 1),
+    { t: t(2), sessionId: 'a', event: 'resume-paid', model: opus, inputTokens: 10, cacheRead: 99_000, cacheWrite: 1_000 },
+    // b: estimated as saved, but the first request rewrote everything
+    { t: t(3), sessionId: 'b', event: 'ping' },
+    resume('b', 4),
+    { t: t(5), sessionId: 'b', event: 'resume-paid', model: opus, inputTokens: 10, cacheRead: 0, cacheWrite: 100_000 },
+    // c: no resume-paid (older ledger): the estimate stands
+    { t: t(6), sessionId: 'c', event: 'ping' },
+    resume('c', 7),
+    // a stray resume-paid without a pinged resume is ignored
+    { t: t(8), sessionId: 'd', event: 'resume-paid', model: opus, cacheRead: 5, cacheWrite: 5 },
+  ]
+  const s = summarize(L, cfg)
+  assert.equal(s.resumedAfterPing, 3)
+  assert.equal(s.savedRewrites, 3)
+  assert.equal(s.measuredResumes, 2)
+  assert.equal(s.heldNotUsed, 1)
+  const expected = paidSavedUsd(100_000, L[2], DEFAULT_PRICES) + paidSavedUsd(100_000, L[5], DEFAULT_PRICES) + savedUsd(L[7], DEFAULT_PRICES)
+  assert.ok(Math.abs(s.savedUsd - expected) < 1e-12)
+  assert.ok(paidSavedUsd(100_000, L[2], DEFAULT_PRICES) > 0)
+  assert.ok(paidSavedUsd(100_000, L[5], DEFAULT_PRICES) < 0.001)
+  assert.match(formatReport(s), /held, not used\s+1/)
+  assert.match(formatReport(s), /measured where paid/)
 })
 
 test('formatReport: readable text, and an empty ledger says so', () => {

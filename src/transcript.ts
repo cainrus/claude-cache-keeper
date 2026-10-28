@@ -53,33 +53,66 @@ export function usageFromLine(line: string): TurnUsage | undefined {
   }
 }
 
-export function lastMainUsage(transcriptPath: string, initialChunk = 256 * 1024): TurnUsage | undefined {
+/**
+ * Visit main-thread usages from the end of the transcript, newest first, until
+ * `visit` returns true. Reads in growing chunks; the first line of a partial
+ * window is probably cut, so it is left whole to the next, larger window.
+ */
+function scanBackwards(transcriptPath: string, initialChunk: number, visit: (u: TurnUsage) => boolean): void {
   let fd: number
   try {
     fd = openSync(transcriptPath, 'r')
   } catch {
-    return undefined
+    return
   }
   try {
-    const size = fstatSync(fd).size
+    let end = fstatSync(fd).size
     let chunk = Math.max(1024, initialChunk)
     for (;;) {
-      const start = Math.max(0, size - chunk)
-      const buf = Buffer.alloc(size - start)
+      const start = Math.max(0, end - chunk)
+      const buf = Buffer.alloc(end - start)
       readSync(fd, buf, 0, buf.length, start)
       const lines = buf.toString('utf8').split('\n')
-      // The first line of a partial window is probably cut; the rest are whole.
       const from = start === 0 ? 0 : 1
       for (let i = lines.length - 1; i >= from; i--) {
         const u = usageFromLine(lines[i])
-        if (u) return u
+        if (u && visit(u)) return
       }
-      if (start === 0) return undefined
+      if (start === 0) return
+      // Byte offset, not decoded length: the cut may split a multi-byte character.
+      const firstBreak = buf.indexOf(0x0a)
+      end = start + (firstBreak < 0 ? buf.length : firstBreak)
       chunk *= 4
     }
   } catch {
-    return undefined
+    return
   } finally {
     closeSync(fd)
   }
+}
+
+export function lastMainUsage(transcriptPath: string, initialChunk = 256 * 1024): TurnUsage | undefined {
+  let last: TurnUsage | undefined
+  scanBackwards(transcriptPath, initialChunk, (u) => {
+    last = u
+    return true
+  })
+  return last
+}
+
+/**
+ * The FIRST main-thread request at or after `sinceMs`: what a resumed turn paid
+ * for the prefix the keeper held. The turn's last request is no use here: when
+ * the first one rewrote the context, every later one reads that fresh write and
+ * looks like a hit. Entries without a timestamp are skipped.
+ */
+export function firstMainUsageSince(transcriptPath: string, sinceMs: number, initialChunk = 256 * 1024): TurnUsage | undefined {
+  let first: TurnUsage | undefined
+  scanBackwards(transcriptPath, initialChunk, (u) => {
+    if (u.timestamp === undefined) return false
+    if (u.timestamp < sinceMs) return true
+    first = u
+    return false
+  })
+  return first
 }

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { lastMainUsage, usageFromLine } from '../src/transcript.ts'
+import { firstMainUsageSince, lastMainUsage, usageFromLine } from '../src/transcript.ts'
 import { assistantLine, FIXTURES, tempHome } from './helpers.ts'
 
 test('last main-thread usage skips sidechain, synthetic and non-assistant lines', () => {
@@ -32,6 +32,26 @@ test('reads past huge trailing lines by widening the window', () => {
   const bigToolResult = JSON.stringify({ type: 'user', message: { content: 'x'.repeat(300_000) } })
   writeFileSync(p, `${assistantLine({ at: 0, read: 42_000 })}\n${bigToolResult}\n${bigToolResult}\n`)
   assert.equal(lastMainUsage(p, 1024)?.cacheRead, 42_000)
+})
+
+test('firstMainUsageSince: the earliest request at or after the moment, across window widenings', () => {
+  const dir = tempHome()
+  const p = join(dir, 'resume.jsonl')
+  const big = JSON.stringify({ type: 'user', message: { content: 'ü'.repeat(200_000) } })
+  const lines = [
+    assistantLine({ at: 1_000, read: 1 }),
+    assistantLine({ at: 2_000, read: 2 }),
+    big,
+    assistantLine({ at: 3_000, read: 3 }),
+    big,
+    assistantLine({ at: 4_000, read: 4 }),
+  ]
+  writeFileSync(p, `${lines.join('\n')}\n`)
+  assert.equal(firstMainUsageSince(p, 2_000, 1024)?.cacheRead, 2)
+  assert.equal(firstMainUsageSince(p, 2_500, 1024)?.cacheRead, 3)
+  assert.equal(firstMainUsageSince(p, 0, 1024)?.cacheRead, 1)
+  assert.equal(firstMainUsageSince(p, 5_000, 1024), undefined)
+  assert.equal(lastMainUsage(p, 1024)?.cacheRead, 4)
 })
 
 test('a torn last line is ignored', () => {
