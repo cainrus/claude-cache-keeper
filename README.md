@@ -181,9 +181,23 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | — | `CACHE_KEEPER_IDLE_SEC` | — | override the presence probe (a number of seconds, or `unknown`) |
 | `handoff.enabled` | `CACHE_KEEPER_HANDOFF` | `false` | write a brief before the cache dies and ask before a prompt hits it cold (see [Handoff](#handoff)) |
 | `handoff.*` | | | see [Handoff](#handoff) |
+| `statusLine` | — | `true` | show the cache line under the prompt (see [Status line](#status-line)) |
 
 The defaults assume the 1-hour TTL of a subscription. On an API key the TTL is 5 minutes unless configured
 otherwise; the first ping will then miss and the oracle will mute the session, which is safe but useless.
+
+## Status line
+
+Installed as a plugin, keeper pins one line under the prompt while the session's cache is warm:
+
+- `cache ↻³ 14:05`: the cache stays warm until 14:05, and keeper will extend it; ³ is how many pings it has left in
+  this stretch.
+- `cache → 14:05`: no ping is coming (none left, the context is too small to hold, or the session is muted), so 14:05
+  is final.
+
+The line disappears once the cache is cold. It comes from keeper's own session record, refreshed a few seconds after
+each turn and every 30 s. It is a line of its own, not part of your `statusLine` command: Claude Code gives plugins no
+way into that slot. If your `statusLine` already shows keeper, set `"statusLine": false` in `config.json`.
 
 ## Handoff
 

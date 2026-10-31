@@ -14,6 +14,7 @@
  */
 
 import type { Register } from 'claude-code'
+import { registerStatus } from './status.ts'
 
 /** The spawn behind menu choice 2 may take a while (handoff-run.ts allows it 45 s). */
 const GATE_TIMEOUT_MS = 60_000
@@ -39,6 +40,9 @@ async function ask($, text: string, turn = false): Promise<string | undefined> {
 }
 
 export const register: Register = on => {
+  // The pinned "cache ↻³ 14:05" line lives in status.ts.
+  registerStatus(on)
+
   // The text a turn began with: turn.step does not carry it.
   const began = new Map<string, string>()
 
