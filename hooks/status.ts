@@ -45,14 +45,15 @@ const envNum = (v: string | undefined): number | undefined => (v !== undefined &
 const truthy = (v: string | undefined): boolean => v !== undefined && /^(1|true|yes|on)$/i.test(v)
 
 /** What to show, or undefined for nothing. Pure, so the tests can drive it. */
-export function lineOf(session: Json | undefined, config: Json, env: { maxPings?: string; minCtxTokens?: string; disabled?: string }, now: number): Line | undefined {
+export function lineOf(session: Json | undefined, config: Json, env: { maxPings?: string; minCtxTokens?: string; disabled?: string }, now: number, tuning?: Json): Line | undefined {
   if (session === undefined) return undefined
   if (config.enabled === false || config.statusLine === false || truthy(env.disabled)) return undefined
   const lastSent = Math.max(num(session.lastTurnEndAt) ?? 0, num(session.lastPingAt) ?? 0)
   if (lastSent === 0) return undefined
   const warmUntil = lastSent + (num(config.cacheTtlSec) ?? DEFAULT_TTL_SEC) * 1000
   if (now >= warmUntil) return undefined
-  const max = envNum(env.maxPings) ?? num(config.maxPings) ?? DEFAULT_MAX_PINGS
+  // As keeper resolves it: env, then config.json, else the cap tune.ts last chose.
+  const max = envNum(env.maxPings) ?? num(config.maxPings) ?? num(tuning?.maxPings) ?? DEFAULT_MAX_PINGS
   const left = Math.max(0, max - (num(session.pingsSoFar) ?? 0))
   const bigEnough = (num(session.ctxTokens) ?? 0) >= (envNum(env.minCtxTokens) ?? num(config.minCtxTokens) ?? DEFAULT_MIN_CTX_TOKENS)
   const muted = session.doneAt !== undefined
@@ -81,14 +82,18 @@ async function refresh($): Promise<void> {
     const sid = await $.session.id()
     const home = (await $.env.get('CACHE_KEEPER_HOME')) ?? `${await $.env.get('HOME')}/.claude-cache-keeper`
     if (!/^[A-Za-z0-9_-]+$/.test(sid)) return $.ui.status(undefined)
-    const [session, config] = await Promise.all([readJson($, `${home}/sessions/${sid}.json`), readJson($, `${home}/config.json`)])
+    const [session, config, tuning] = await Promise.all([
+      readJson($, `${home}/sessions/${sid}.json`),
+      readJson($, `${home}/config.json`),
+      readJson($, `${home}/tuning.json`),
+    ])
     const env = {
       maxPings: await $.env.get('CACHE_KEEPER_MAX_PINGS'),
       minCtxTokens: await $.env.get('CACHE_KEEPER_MIN_CTX_TOKENS'),
       disabled: await $.env.get('CACHE_KEEPER_DISABLED'),
     }
     const now = await $.clock.now()
-    const line = lineOf(session, config ?? {}, env, now)
+    const line = lineOf(session, config ?? {}, env, now, tuning)
     $.ui.status(line === undefined ? undefined : format(line, new Date(line.warmUntil).getTimezoneOffset()))
   } catch {
     $.ui.status(undefined)

@@ -38,6 +38,12 @@ test('the env cap wins over config.json, as in keeper itself', () => {
   assert.equal(lineOf(session(), { minCtxTokens: 1000 }, { minCtxTokens: '60000' }, T)!.extends, false)
 })
 
+test('without a cap in env or config.json, the tuned one counts', () => {
+  assert.equal(lineOf(session(), {}, {}, T, { maxPings: 6 })!.left, 5)
+  assert.equal(lineOf(session(), { maxPings: 2 }, {}, T, { maxPings: 6 })!.left, 1)
+  assert.equal(lineOf(session(), {}, {}, T)!.left, 3)
+})
+
 test('nothing is shown when cold, off, disabled or without a record', () => {
   assert.equal(lineOf(session(), {}, {}, T + 60 * MIN), undefined)
   assert.equal(lineOf(session(), { cacheTtlSec: 300 }, {}, T + 6 * MIN), undefined)
