@@ -56,10 +56,13 @@ export interface PolicyInput {
   awayPingsSincePresence: number
   /** Did the previous ping read the cache (true) or rewrite it (false)? null = no ping yet. */
   lastPingHit: boolean | null
+  /** The human said this session is done (`/cache-keeper:done`); cleared by their next real prompt. */
+  muted?: boolean
 }
 
 /** Refusal reasons, in the order `decide` checks them. */
 export const SKIP_REASONS = [
+  'done',
   'away',
   'away-budget-spent',
   'context-too-small',
@@ -84,10 +87,13 @@ export function isAtKeyboard(awaySeconds: number | null, t: Thresholds = THRESHO
 
 /**
  * Branch order is the policy: it decides which reason the ledger blames.
- * Presence first (a machine nobody sits at needs no budget explanation), then
+ * An explicit `done` first, then presence (a machine nobody sits at needs no budget explanation), then
  * the facts about what a ping would cost, then the per-session limits.
  */
 export function decide(s: PolicyInput, t: Thresholds = THRESHOLDS): Decision {
+  // The human's own word outranks every measurement.
+  if (s.muted === true) return { ping: false, reason: 'done' }
+
   // Unknown presence is not "gone": the away gate only fires on a real reading.
   // `null > n` would be false anyway, but spelled out so the intent is visible.
   const goneForGood = s.awaySeconds !== null && s.awaySeconds > t.awaySec

@@ -24,6 +24,8 @@ export interface Config {
   home: string
   enabled: boolean
   thresholds: Thresholds
+  /** `maxPings` follows the ledger (tune.ts) unless env or config.json set it. */
+  maxPingsAuto: boolean
   /** A wake turn is a cache hit when read / (read + write) >= this. */
   hitRatio: number
   /** Cache TTL the savings estimate assumes (1h on a subscription). */
@@ -108,9 +110,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const file = readConfigFile(home)
 
   const thresholds: Thresholds = { ...THRESHOLDS }
+  let maxPingsAuto = true
   for (const key of Object.keys(THRESHOLDS) as Array<keyof Thresholds>) {
     const v = num(env[THRESHOLD_ENV[key]]) ?? num(file[key])
-    if (v !== undefined) thresholds[key] = v
+    if (v === undefined) continue
+    thresholds[key] = v
+    if (key === 'maxPings') maxPingsAuto = false
   }
 
   const hitRatio = num(env.CACHE_KEEPER_HIT_RATIO) ?? num(file.hitRatio)
@@ -127,6 +132,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     home,
     enabled: disabled !== undefined ? !disabled : (bool(file.enabled) ?? true),
     thresholds,
+    maxPingsAuto,
     hitRatio: hitRatio !== undefined && hitRatio <= 1 ? hitRatio : 0.9,
     cacheTtlSec: num(file.cacheTtlSec) ?? 3600,
     delaySec: num(env.CACHE_KEEPER_DELAY_SEC) ?? DEFAULT_DELAY_SEC,

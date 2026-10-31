@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { appendFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { end, isWakePrompt, record, touch, TRANSCRIPT_CATCH_UP_MS, wake, WAKE_MESSAGE } from '../src/commands.ts'
+import { DONE_COMMAND, DONE_REPLY, end, isDoneCommand, isWakePrompt, record, touch, TRANSCRIPT_CATCH_UP_MS, wake, WAKE_MESSAGE } from '../src/commands.ts'
 import { readLedger } from '../src/ledger.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
 import { loadAwayBudget, loadSession, newSession, saveAwayBudget, saveSession } from '../src/state.ts'
@@ -356,4 +356,47 @@ test('loop: pings every ~50 min while hits keep landing, stops at the per-stretc
   const events = readLedger(home).map((e) => e.event)
   assert.equal(events.filter((e) => e === 'wake-hit').length, T.maxPings)
   assert.equal(readLedger(home).at(-1)?.reason, 'budget-spent')
+})
+
+// --- /cache-keeper:done -------------------------------------------------------
+
+test('done: blocks the command, mutes the session and keeps the stretch open', () => {
+  const { home, config } = setup()
+  wake({ session_id: SID }, makeCtx(config, T0 + WARM_ENOUGH))
+  const out: string[] = []
+  const ctx = { ...makeCtx(config, T0 + WARM_ENOUGH + MIN), stdout: (t: string) => out.push(t) }
+  assert.equal(touch({ session_id: SID, prompt: DONE_COMMAND }, ctx), 0)
+  assert.deepEqual(JSON.parse(out[0]), { decision: 'block', reason: DONE_REPLY })
+  const s = loadSession(home, SID)!
+  assert.equal(s.doneAt, T0 + WARM_ENOUGH + MIN)
+  assert.equal(s.pingsSoFar, 1, 'the command is not a resume')
+  assert.equal(s.lastHumanAt, undefined)
+  assert.deepEqual(readLedger(home).map((e) => e.event), ['ping', 'done'])
+})
+
+test('done: the next wake is refused with reason done, and no handoff is asked', () => {
+  const { home, config } = setup({ CACHE_KEEPER_HANDOFF: '1', CACHE_KEEPER_HANDOFF_MIN_CTX_TOKENS: '1' })
+  touch({ session_id: SID, prompt: '/cache-keeper:done' }, makeCtx(config, T0 + MIN))
+  const ctx = makeCtx(config, T0 + WARM_ENOUGH, T.awaySec + 1)
+  assert.equal(wake({ session_id: SID }, ctx), 0)
+  assert.deepEqual(ctx.errors, [])
+  const last = readLedger(home).at(-1)!
+  assert.equal(last.event, 'skip')
+  assert.equal(last.reason, 'done')
+})
+
+test('done: a real prompt lifts it', () => {
+  const { home, config } = setup()
+  touch({ session_id: SID, prompt: DONE_COMMAND }, makeCtx(config, T0 + MIN))
+  touch({ session_id: SID, prompt: 'one more thing' }, makeCtx(config, T0 + 2 * MIN))
+  assert.equal(loadSession(home, SID)!.doneAt, undefined)
+})
+
+test('done: only the namespaced command matches', () => {
+  assert.ok(isDoneCommand('/cache-keeper:done'))
+  assert.ok(isDoneCommand('  /cache-keeper:done  '))
+  assert.ok(isDoneCommand('/cache-keeper:done for today'))
+  assert.ok(!isDoneCommand('/done'))
+  assert.ok(!isDoneCommand('/cache-keeper:doneish'))
+  assert.ok(!isDoneCommand('please run /cache-keeper:done'))
 })

@@ -79,17 +79,24 @@ it decides which reason the ledger blames.
 
 | # | refuse when | reason | default |
 |---|---|---|---|
+| 0 | the human ran `/cache-keeper:done` in this session (lifted by their next prompt) | `done` | — |
 | 1 | human away longer than `awaySec` (keyboard/mouse idle) | `away` | 1200 s |
 | 2 | human not at keyboard (> `presenceSec`) and the machine-wide away budget is spent | `away-budget-spent` | 300 s, 6 pings |
 | 3 | context smaller than `minCtxTokens` | `context-too-small` | 20 000 |
 | 4 | cache already older than `maxAgeSec` (a ping would pay a full write) | `cache-expired` | 58 min |
 | 5 | cache younger than `minAgeSec` | `cache-still-warm` | 50 min |
-| 6 | `pingsSoFar >= maxPings` in this idle stretch | `budget-spent` | 4 |
+| 6 | `pingsSoFar >= maxPings` in this idle stretch | `budget-spent` | 4, then tuned |
 | 7 | the previous ping missed the cache | `oracle-miss` | — |
 
 - **Presence** is macOS `HIDIdleTime` (`ioreg -c IOHIDSystem`), which also
-  covers a closed lid and a locked screen. On other platforms, or when the probe
-  fails, presence is `null`: gate 1 passes (unknown is not "gone"), gate 2
+  covers a closed lid and a locked screen. On Linux a chain, first answer wins:
+  Mutter `GetIdletime`, freedesktop `ScreenSaver.GetSessionIdleTime`,
+  `xprintidle`, then `loginctl show-user` (`IdleHint` / `IdleSinceHint`). The
+  first three need the desktop's bus or display, which a daemon-spawned session
+  may not inherit; logind needs neither, but is trusted only with a graphical
+  session (`Display=`), since without a desktop the hint can stay "not idle"
+  forever and would lift the away budget. Each probe gets 2 s. On other
+  platforms, or when nothing answers, presence is `null`: gate 1 passes (unknown is not "gone"), gate 2
   treats it as *not* at the keyboard — the only machine-wide cap must not be
   lifted by a broken probe.
 - **Away budget** is one small JSON file for the whole machine
@@ -97,9 +104,18 @@ it decides which reason the ledger blames.
   observed). Without it, the spend of one absence grows with the number of open
   sessions. Writes are atomic (`write tmp + rename`); a lost increment under a
   race costs one extra ping, never an unbounded number.
-- **Per-stretch cap** (`maxPings`, 4 ≈ four hours of holding) is the answer to
+- **Per-stretch cap** (`maxPings`, 4 ≈ four hours of holding to start with) is the answer to
   "I was at the computer but never went back to that session": the counter is
   reset only by a real prompt in *this* session.
+- **The cap tunes itself** (`src/tune.ts`) unless `maxPings` is set. The k-th
+  ping pays off when the stretch resumes warm right after it, so it is worth
+  sending while `P(warm resume after ping k | ping k sent) >= breakeven`, and
+  breakeven is the mean wake cost over the rewrite it avoids, both from the
+  ledger (5.9 % on the author's). Nothing above the cap is ever observed, so
+  the cap learns by trying one more: once a day, on at least 30 pings at the
+  cap's position from the last 60 days, it goes up a step when that position
+  clears 2× breakeven and down a step when it does not clear breakeven, inside
+  [2, 8]. The decision is kept in `tuning.json`; `report` prints it.
 - Every threshold is overridable through env (`CACHE_KEEPER_*`) and a JSON
   config file; tests assert behaviour against the exported constants, never the
   numbers.

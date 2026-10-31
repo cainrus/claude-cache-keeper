@@ -96,6 +96,11 @@ test('oracle: a miss mutes the session, no ping yet or a hit does not', () => {
   assert.equal(reason({ ...OK, lastPingHit: true }), 'ping')
 })
 
+test('done: the human\'s word refuses even a ping every other gate allows', () => {
+  assert.equal(reason({ ...OK, muted: true }), 'done')
+  assert.equal(reason({ ...OK, muted: false }), 'ping')
+})
+
 // --- branch order ------------------------------------------------------------
 
 /** Every gate failing at once; each step below repairs the gate that won. */
@@ -106,10 +111,12 @@ const WORST: PolicyInput = {
   pingsSoFar: T.maxPings,
   awayPingsSincePresence: T.maxAwayPings,
   lastPingHit: false,
+  muted: true,
 }
 
 test('branch order: repairing each winning gate exposes the next one, in SKIP_REASONS order', () => {
   const repairs: Array<(s: PolicyInput) => PolicyInput> = [
+    (s) => ({ ...s, muted: false }),
     (s) => ({ ...s, awaySeconds: T.presenceSec + 1 }), // away -> still not at keyboard
     (s) => ({ ...s, awayPingsSincePresence: 0 }),
     (s) => ({ ...s, ctxTokens: T.minCtxTokens }),

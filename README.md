@@ -58,12 +58,13 @@ Claude Code 2.1.281, background session (`claude --bg`), hook declared in `.clau
 
 | # | refuse when | ledger reason | default |
 |---|---|---|---|
+| 0 | you ran [`/cache-keeper:done`](#done-with-a-session) in this session | `done` | — |
 | 1 | keyboard/mouse idle longer than `awaySec` | `away` | 1200 s |
 | 2 | not at the keyboard (idle > `presenceSec`) and the machine-wide away budget is spent | `away-budget-spent` | 300 s, 6 pings |
 | 3 | context smaller than `minCtxTokens` | `context-too-small` | 20 000 |
 | 4 | cache older than `maxAgeSec` — a ping would pay a full write | `cache-expired` | 58 min |
 | 5 | cache younger than `minAgeSec` | `cache-still-warm` | 50 min |
-| 6 | `maxPings` already spent in this idle stretch | `budget-spent` | 4 |
+| 6 | `maxPings` already spent in this idle stretch | `budget-spent` | 4, then [tuned](#the-cap-tunes-itself) |
 | 7 | the previous ping missed the cache | `oracle-miss` | — |
 | 8 | the `skipIf` command exits 0 | `skip-if` | not set |
 | 9 | the `skipIf` command exits 3 and no [handoff](#handoff) is due | `holder` | not set |
@@ -76,13 +77,31 @@ Claude Code 2.1.281, background session (`claude --bg`), hook declared in `.clau
   [handoff](#handoff) with no menu when one is due. A failing, missing or slow (> 5 s) command lets the ping out, so a
   broken probe falls back to the keeper's own behaviour. Compare `LAST_PROMPT_AT` with your own "done" timestamp to
   let a session be kept again once someone writes to it after the fact.
-- **Presence** is macOS `HIDIdleTime`, which keeps counting through a closed lid or a locked screen. Elsewhere, or
-  when the probe fails, presence is *unknown*: the `away` gate lets it through, but the away budget treats it as
+- **Presence** is macOS `HIDIdleTime`, which keeps counting through a closed lid or a locked screen. On Linux the
+  first of these that answers: GNOME's Mutter idle monitor, the freedesktop `ScreenSaver` interface (KDE),
+  `xprintidle` (X11), then logind's idle hint (`loginctl show-user`, trusted only while you have a graphical
+  session, and only as fine as your desktop's idle delay). Elsewhere, or when no probe answers, presence is *unknown*: the `away` gate lets it through, but the away budget treats it as
   "not at the keyboard", so a broken probe can never lift the only machine-wide cap.
 - **The away budget** is one small file shared by every session on the machine, refilled whenever presence is seen.
   Without it, the spend of one absence would grow with the number of open sessions.
-- **The per-stretch cap** (4 pings ≈ four hours) covers "I was at the computer but never went back to that session":
-  it is reset only by a real prompt in that session.
+- **The per-stretch cap** (4 pings ≈ four hours to start with) covers "I was at the computer but never went back to
+  that session": it is reset only by a real prompt in that session.
+
+### The cap tunes itself
+
+Unless you set `maxPings`, the keeper moves it by the ledger. The k-th ping of a stretch pays off when you come back
+while its cache is still warm, so it is worth sending while that happens more often than the ping costs relative to
+the rewrite it avoids (the breakeven, measured from the ledger too: 5.9 % on the author's machine). Above the cap
+nothing is observed, so the cap learns by trying one more. Once a day, with at least 30 pings at the cap's position
+in the last 60 days, it goes up a step when that position kept 2× breakeven warm and down a step when it kept less
+than breakeven, within [2, 8]. On the author's ledger the 4th ping kept 17.9 % warm, so the first step is 4 → 5.
+`cache-keeper report` prints the current cap and why; the decision is kept in `$CACHE_KEEPER_HOME/tuning.json`.
+
+### Done with a session
+
+Type `/cache-keeper:done` (plugin install) when you know you will not come back to a session. The hook answers it
+and blocks it, so it costs no model request, and the session gets no more pings or handoff. Your next message in
+that session lifts it. For a rule rather than a one-off, use `skipIf`.
 
 The full rationale is in [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -119,7 +138,7 @@ so this ledger has none yet. On a subscription the balance is usage-limit headro
 ## Install
 
 Requires Node **≥ 22.18** on `PATH` (runs `.ts` natively) and a POSIX shell. macOS gives the best presence signal;
-Linux works with presence unknown (see above).
+Linux desktops are covered by the probes above, and a headless Linux box runs with presence unknown.
 
 ### As a plugin
 
@@ -155,7 +174,7 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | `minCtxTokens` | `CACHE_KEEPER_MIN_CTX_TOKENS` | `20000` | smallest context worth holding |
 | `minAgeSec` | `CACHE_KEEPER_MIN_AGE_SEC` | `3000` | earliest ping |
 | `maxAgeSec` | `CACHE_KEEPER_MAX_AGE_SEC` | `3480` | latest ping |
-| `maxPings` | `CACHE_KEEPER_MAX_PINGS` | `4` | pings per idle stretch |
+| `maxPings` | `CACHE_KEEPER_MAX_PINGS` | auto, from `4` | pings per idle stretch; setting it turns the [tuning](#the-cap-tunes-itself) off |
 | `hitRatio` | `CACHE_KEEPER_HIT_RATIO` | `0.9` | wake turn counts as a hit at `read / (read + write) ≥` this |
 | `prices` | — | opus 5, sonnet 3, haiku 1 | USD per million base input tokens, for `report` |
 | `skipIf` | `CACHE_KEEPER_SKIP_IF` | — | shell command asked before each ping or due handoff; exit 0 skips, exit 3 hands off (see [How it decides](#how-it-decides)) |
@@ -289,7 +308,9 @@ billed per token, but the same tokens count against usage limits.
 - **`claude -p` is skipped on purpose.** In print mode async hooks are not backgrounded, so the waiter would hold
   a one-shot run open; it detects `CLAUDE_CODE_ENTRYPOINT=sdk-cli` and returns at once.
 - **No Windows support** — the waiter uses POSIX `sleep`.
-- Presence is macOS-only; on other systems the away budget is the only cap while you are away.
+- Presence needs a desktop: on a headless Linux box, or a session started without its desktop's session bus, only
+  logind can answer, and without a graphical session nobody does; then the away budget is the only cap while you are
+  away. A desktop with its idle delay off never sets logind's hint, so there the precise probes are the only signal.
 
 ## Development
 
@@ -298,9 +319,17 @@ npm test                           # node --test, no dependencies
 node bin/cache-keeper.ts --help
 ```
 
-The tests cover every policy branch and the branch order, the presence parser, the away budget, the oracle against
-fixture transcripts, the report math, and an end-to-end run of the exact `hooks/hooks.json` commands through `bash`
-with a temp state directory, a fake transcript and a presence override — no network, no Claude Code, any OS.
+The tests cover every policy branch and the branch order, the presence probes (macOS and each Linux one, with fake
+commands, plus the real probe of the machine they run on), the away budget, the cap tuner, the oracle against fixture
+transcripts, the report math, and an end-to-end run of the exact `hooks/hooks.json` commands through `bash` with a
+temp state directory, a fake transcript and a presence override — no network, any OS.
+
+- `test/fixtures/real-shapes.jsonl` carries the line shapes Claude Code really writes (compaction, API errors,
+  `system` and `attachment` lines, junk roots, a torn tail) with invented content. It is generated by
+  `make-real-shapes.ts`, and a test checks the two agree.
+- `test/concurrency.test.ts` races eight processes on the ledger and on one session file.
+- `test/plugin.test.ts` runs `claude plugin validate --strict` on the plugin and the marketplace when a `claude`
+  binary is on `PATH` (or in `CLAUDE_BIN`) and is skipped otherwise; CI runs it on a pinned Claude Code.
 
 ## License
 

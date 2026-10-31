@@ -43,6 +43,8 @@ export interface SessionState {
    * what that turn's first request paid (`resume-paid`) and clears it.
    */
   resumeAt?: number
+  /** Epoch ms of `/cache-keeper:done`: no pings until the next real prompt. */
+  doneAt?: number
 }
 
 export interface AwayBudget {

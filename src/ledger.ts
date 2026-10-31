@@ -28,6 +28,7 @@ export type LedgerEvent =
   | 'handoff-here'
   | 'handoff-new'
   | 'handoff-failed'
+  | 'done'
 
 export interface LedgerEntry {
   /** ISO timestamp. */
@@ -38,7 +39,7 @@ export interface LedgerEntry {
   ctxTokens?: number
   ageSec?: number
   model?: string
-  /** resume: pings spent on the stretch that just ended. */
+  /** resume: pings spent on the stretch that just ended. ping: this ping's position in its stretch (1-based). */
   pings?: number
   /** resume: whether the last ping of the stretch hit the cache (null = unknown). */
   lastPingHit?: boolean | null

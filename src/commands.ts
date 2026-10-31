@@ -24,6 +24,7 @@ import {
   saveSession,
 } from './state.ts'
 import { firstMainUsageSince, lastMainUsage } from './transcript.ts'
+import { tunedMaxPings } from './tune.ts'
 import type { SessionFacts, Verdict } from './veto.ts'
 
 export const WAKE_MARKER = '[cache-keeper] Prompt-cache keep-alive.'
@@ -91,6 +92,18 @@ const secondsBetween = (from: number, to: number) => Math.max(0, Math.floor((to 
 export function isWakePrompt(prompt: string | undefined): boolean {
   return typeof prompt === 'string' && prompt.includes(WAKE_MARKER)
 }
+
+/** The plugin's `/cache-keeper:done`. The hook sees the typed line itself (measured on 2.1.30x). */
+export const DONE_COMMAND = '/cache-keeper:done'
+
+export function isDoneCommand(prompt: string | undefined): boolean {
+  if (typeof prompt !== 'string') return false
+  const p = prompt.trim()
+  return p === DONE_COMMAND || p.startsWith(`${DONE_COMMAND} `)
+}
+
+export const DONE_REPLY =
+  'cache-keeper: this session will not be kept warm. Your next message lifts it. Nothing was sent to the model.'
 
 /** Stop (sync): record the finished turn; if it closed a wake, score the ping. */
 export function record(input: HookInput, ctx: Ctx): number {
@@ -200,6 +213,8 @@ export function wake(input: HookInput, ctx: Ctx): number {
     saveAwayBudget(home, budget)
   }
 
+  // Asked only here, past the stale-sleeper exit, so a stale sleeper never reads the ledger.
+  const limits = ctx.config.maxPingsAuto ? { ...thresholds, maxPings: tunedMaxPings(ctx.config, ctx.now) } : thresholds
   const decision = decide(
     {
       awaySeconds,
@@ -208,8 +223,9 @@ export function wake(input: HookInput, ctx: Ctx): number {
       pingsSoFar: state.pingsSoFar,
       awayPingsSincePresence: budget.awayPingsSincePresence,
       lastPingHit: state.lastPingHit,
+      muted: state.doneAt !== undefined,
     },
-    thresholds,
+    limits,
   )
 
   const base = { t: iso(ctx.now), sessionId: sid, ctxTokens: state.ctxTokens, ageSec, model: state.model, awaySeconds }
@@ -263,7 +279,7 @@ export function wake(input: HookInput, ctx: Ctx): number {
     budget.updatedAt = ctx.now
     saveAwayBudget(home, budget)
   }
-  appendLedger(home, { ...base, event: 'ping' })
+  appendLedger(home, { ...base, event: 'ping', pings: state.pingsSoFar })
   ctx.stderr(`${WAKE_MESSAGE}\n`)
   return 2
 }
@@ -279,6 +295,16 @@ export function touch(input: HookInput, ctx: Ctx, gate = false): number {
   const { home } = ctx.config
   const state = loadSession(home, sid) ?? newSession(sid)
   if (input.transcript_path) state.transcriptPath = input.transcript_path
+
+  // Answered here and blocked, so the command costs no model request and the
+  // idle stretch it mutes stays open (it is not a resume).
+  if (isDoneCommand(input.prompt)) {
+    state.doneAt = ctx.now
+    saveSession(home, state)
+    appendLedger(home, { t: iso(ctx.now), sessionId: sid, event: 'done', ctxTokens: state.ctxTokens, model: state.model })
+    ctx.stdout?.(`${JSON.stringify({ decision: 'block', reason: DONE_REPLY })}\n`)
+    return 0
+  }
 
   const stillHeld = (): boolean =>
     ctx.skipIf?.({ sessionId: sid, transcriptPath: state.transcriptPath, lastPromptAt: state.lastHumanAt }) === 'handoff'
@@ -311,6 +337,7 @@ export function touch(input: HookInput, ctx: Ctx, gate = false): number {
   state.pendingPing = false
   state.handoffRequested = false
   state.handoffPending = false
+  delete state.doneAt
   state.lastHumanAt = ctx.now
   saveSession(home, state)
 

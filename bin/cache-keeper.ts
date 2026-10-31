@@ -13,6 +13,7 @@ import { buildHooks, shellQuote, waitCommand } from '../src/hooks.ts'
 import { readLedger } from '../src/ledger.ts'
 import { isBackgroundSession, readIdleSeconds } from '../src/presence.ts'
 import { formatReport, summarize } from '../src/report.ts'
+import { loadTuning } from '../src/tune.ts'
 import { runSkipIf } from '../src/veto.ts'
 
 const VERSION = '0.4.0'
@@ -96,7 +97,19 @@ function main(argv: string[]): number {
     case 'report': {
       const config = loadConfig()
       const summary = summarize(readLedger(config.home), config)
-      process.stdout.write(rest.includes('--json') ? `${JSON.stringify(summary, null, 2)}\n` : formatReport(summary))
+      const tuning = config.maxPingsAuto ? loadTuning(config.home) : undefined
+      const cap = {
+        maxPings: tuning?.maxPings ?? config.thresholds.maxPings,
+        auto: config.maxPingsAuto,
+        why: tuning?.why,
+        step: tuning?.step,
+        from: tuning?.from,
+      }
+      process.stdout.write(
+        rest.includes('--json')
+          ? `${JSON.stringify({ ...summary, maxPings: { ...cap, stats: tuning?.stats, breakeven: tuning?.breakeven } }, null, 2)}\n`
+          : formatReport(summary, cap),
+      )
       return 0
     }
     case 'install-snippet':

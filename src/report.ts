@@ -161,7 +161,23 @@ export function summarize(entries: LedgerEntry[], config: Pick<Config, 'prices' 
 const usd = (v: number) => `${v < 0 ? '-' : ''}$${Math.abs(v).toFixed(2)}`
 const row = (label: string, value: string | number) => `  ${label.padEnd(22)}${String(value).padStart(10)}`
 
-export function formatReport(s: Summary): string {
+/** What the report says about the per-stretch cap: fixed by the config, or where the tuner left it. */
+export interface CapLine {
+  maxPings: number
+  auto: boolean
+  why?: string
+  step?: 'up' | 'down' | 'hold'
+  from?: number
+}
+
+export function formatCap(c: CapLine): string {
+  if (!c.auto) return `max pings per stretch  ${c.maxPings} (set in config)`
+  if (!c.why) return `max pings per stretch  ${c.maxPings} (auto, not computed yet)`
+  const move = c.step === 'hold' || c.from === undefined ? 'held' : `${c.step} from ${c.from}`
+  return `max pings per stretch  ${c.maxPings} (auto, ${move}: ${c.why})`
+}
+
+export function formatReport(s: Summary, cap?: CapLine): string {
   if (s.entries === 0) return 'cache-keeper: the ledger is empty — no idle session has reached a decision yet.\n'
   const lines = [
     `cache-keeper report  ${s.from?.slice(0, 16)} .. ${s.to?.slice(0, 16)}  (${s.entries} ledger lines)`,
@@ -186,6 +202,7 @@ export function formatReport(s: Summary): string {
     row('rewrites avoided', usd(s.savedUsd)),
     row('ping cost', usd(s.pingCostUsd)),
     row('balance', (s.balanceUsd >= 0 ? '+' : '') + usd(s.balanceUsd)),
+    ...(cap ? ['', formatCap(cap)] : []),
   ]
   return `${lines.join('\n')}\n`
 }

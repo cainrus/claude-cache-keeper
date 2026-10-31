@@ -21,6 +21,7 @@
     "bin/",
     "src/",
     "hooks/",
+    "commands/",
     ".claude-plugin/",
     "docs/",
     "NOTICE"
