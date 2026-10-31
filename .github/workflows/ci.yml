@@ -32,3 +32,22 @@ jobs:
           node bin/cache-keeper.ts install-snippet > /dev/null
       - name: Test
         run: npm test
+
+  plugin:
+    name: claude plugin validate (Claude Code ${{ matrix.claude }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Pinned: a new release may add checks. Bump it on purpose, after a local run.
+        claude: ['2.1.316']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@${{ matrix.claude }}
+      - name: Validate
+        env:
+          CACHE_KEEPER_REQUIRE_CLAUDE: '1'
+        run: node --test test/plugin.test.ts
