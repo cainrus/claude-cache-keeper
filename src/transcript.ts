@@ -32,7 +32,7 @@ export function usageFromLine(line: string): TurnUsage | undefined {
   } catch {
     return undefined
   }
-  if (!rec || rec.type !== 'assistant' || rec.isSidechain === true) return undefined
+  if (!rec || rec.type !== 'assistant' || rec.isSidechain === true || rec.isApiErrorMessage === true) return undefined
   const msg = rec.message
   const u = msg?.usage
   if (!u || typeof u !== 'object') return undefined
@@ -41,6 +41,8 @@ export function usageFromLine(line: string): TurnUsage | undefined {
   const inputTokens = n(u.input_tokens)
   const cacheRead = n(u.cache_read_input_tokens)
   const cacheWrite = n(u.cache_creation_input_tokens)
+  // No request reached the cache (an error turn under another name): reading it would zero the context.
+  if (inputTokens + cacheRead + cacheWrite === 0) return undefined
   const ts = typeof rec.timestamp === 'string' ? Date.parse(rec.timestamp) : NaN
   return {
     inputTokens,
