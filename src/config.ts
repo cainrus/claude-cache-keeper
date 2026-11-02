@@ -33,6 +33,8 @@ export interface Config {
   /** Delay of the waiter; only informative here — the shell reads the env var itself. */
   delaySec: number
   prices: PriceTable
+  /** Let the plugin's mod send pings as `$.model.fork` instead of a wake turn (fork.ts). */
+  forkPings: boolean
   /** Shell command asked before each ping; exit 0 skips it (see veto.ts). */
   skipIf?: string
   handoff: HandoffConfig
@@ -137,6 +139,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     cacheTtlSec: num(file.cacheTtlSec) ?? 3600,
     delaySec: num(env.CACHE_KEEPER_DELAY_SEC) ?? DEFAULT_DELAY_SEC,
     prices,
+    forkPings: bool(env.CACHE_KEEPER_FORK) ?? bool(file.forkPings) ?? true,
     skipIf: str(env.CACHE_KEEPER_SKIP_IF) ?? str(file.skipIf),
     handoff: loadHandoff(env, file.handoff),
   }

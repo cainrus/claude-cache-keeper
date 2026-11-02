@@ -45,6 +45,22 @@ export interface SessionState {
   resumeAt?: number
   /** Epoch ms of `/cache-keeper:done`: no pings until the next real prompt. */
   doneAt?: number
+  /**
+   * Epoch ms the plugin's mod (hooks/keepalive.ts) last took this session's
+   * pings. While it is not older than the last turn, the mod's own timer sends
+   * them as forks and the Stop sleeper stands down.
+   */
+  forkArmedAt?: number
+  /** How the open ping went out: a fork (scored by `forked`) or a turn (scored by `record`). */
+  pingTransport?: 'fork' | 'turn'
+  /**
+   * Epoch ms of the last main-thread request Claude Code itself saw (a real
+   * turn or a wake turn). A fork renews the server's cache but not Claude
+   * Code's own clock, which its compaction reads (anthropics/claude-code#105017).
+   */
+  lastRequestAt?: number
+  /** Fork pings sent since `lastRequestAt`. */
+  forkPingsHeld?: number
 }
 
 export interface AwayBudget {

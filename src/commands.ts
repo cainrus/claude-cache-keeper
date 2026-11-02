@@ -22,6 +22,7 @@ import {
   newSession,
   saveAwayBudget,
   saveSession,
+  type SessionState,
 } from './state.ts'
 import { firstMainUsageSince, lastMainUsage } from './transcript.ts'
 import { tunedMaxPings } from './tune.ts'
@@ -125,7 +126,7 @@ export function record(input: HookInput, ctx: Ctx): number {
 
   // The turn this Stop closes began at our wake (pendingPing) or at the last
   // real prompt; its assistant entry cannot be older than that.
-  const turnBegan = state.pendingPing ? (state.lastPingAt ?? 0) : (state.lastHumanAt ?? 0)
+  const turnBegan = state.pendingPing && state.pingTransport !== 'fork' ? (state.lastPingAt ?? 0) : (state.lastHumanAt ?? 0)
   const usage = state.transcriptPath ? usageSince(state.transcriptPath, turnBegan, ctx) : undefined
 
   // The cache was last touched by the request that produced the last assistant
@@ -136,6 +137,9 @@ export function record(input: HookInput, ctx: Ctx): number {
   // last human prompt means the transcript has not caught up yet: use now.
   const ts = usage?.timestamp
   state.lastTurnEndAt = ts !== undefined && ts >= (state.lastHumanAt ?? 0) ? Math.min(ts, ctx.now) : ctx.now
+  // A turn is a request Claude Code saw itself: its compaction trusts the cache again.
+  state.lastRequestAt = state.lastTurnEndAt
+  state.forkPingsHeld = 0
 
   if (usage) {
     state.ctxTokens = usage.ctxTokens
@@ -145,8 +149,9 @@ export function record(input: HookInput, ctx: Ctx): number {
   // Only a Stop that follows our own wake is scored. `stop_hook_active` alone
   // is also set when some other Stop hook blocked the turn; scoring that turn
   // could record a spurious miss and mute this session for good.
-  const closedWake = state.pendingPing
-  if (state.pendingPing) {
+  // A fork ping is scored by `forked`: a Stop never closes one.
+  const closedWake = state.pendingPing && state.pingTransport !== 'fork'
+  if (closedWake) {
     state.pendingPing = false
     if (usage) {
       const denom = usage.cacheRead + usage.cacheWrite
@@ -190,19 +195,48 @@ export function record(input: HookInput, ctx: Ctx): number {
   return 0
 }
 
+/** How long before the last turn the mod may have armed and still own its stretch (hook order varies). */
+export const ARM_SLACK_MS = 60_000
+
+/** Does the plugin's mod send this session's pings (fork.ts)? Then the Stop sleeper stands down. */
+export function forkOwns(state: SessionState, config: Config): boolean {
+  return config.forkPings && state.forkArmedAt !== undefined && state.forkArmedAt >= (state.lastTurnEndAt ?? 0) - ARM_SLACK_MS
+}
+
+/**
+ * What a wake decided. `ping` and `handoff` are already recorded (state and
+ * ledger); the caller only delivers them. `retryInSec`: the stretch is not due
+ * yet, ask again then (only the mod's timer uses it; a Stop sleeper is re-armed by its Stop).
+ */
+export type WakeOutcome = { kind: 'none'; retryInSec?: number } | { kind: 'ping' } | { kind: 'handoff'; message: string }
+
 /** After the sleep: decide whether this idle session gets a ping (exit 2) or not (exit 0). */
 export function wake(input: HookInput, ctx: Ctx): number {
+  const sid = input.session_id
+  if (!sid) return 0
+  const state = loadSession(ctx.config.home, sid)
+  // The mod took this stretch: its timer sends the ping as a fork.
+  if (state && forkOwns(state, ctx.config)) return 0
+  const out = decideWake(input, ctx, 'turn')
+  if (out.kind === 'none') return 0
+  ctx.stderr(`${out.kind === 'ping' ? WAKE_MESSAGE : out.message}\n`)
+  return 2
+}
+
+/** The decision behind `wake` and the mod's `fork-wake`; `transport` is how a ping would go out. */
+export function decideWake(input: HookInput, ctx: Ctx, transport: 'turn' | 'fork'): WakeOutcome {
   const { home, thresholds, enabled } = ctx.config
   const sid = input.session_id
-  if (!enabled || !sid) return 0
+  if (!enabled || !sid) return { kind: 'none' }
   const state = loadSession(home, sid)
-  if (!state || state.lastTurnEndAt === undefined) return 0
+  if (!state || state.lastTurnEndAt === undefined) return { kind: 'none' }
 
   // A newer turn ended (or started) since this sleeper was armed: its own
   // sleeper owns the session now.
   const ageSec = secondsBetween(state.lastTurnEndAt, ctx.now)
   const turnStartedSince = (state.lastHumanAt ?? 0) > state.lastTurnEndAt
-  if (ageSec < thresholds.minAgeSec || turnStartedSince) return 0
+  if (turnStartedSince) return { kind: 'none' }
+  if (ageSec < thresholds.minAgeSec) return { kind: 'none', retryInSec: thresholds.minAgeSec - ageSec + 1 }
 
   const awaySeconds = ctx.idleSeconds()
   const atKeyboard = isAtKeyboard(awaySeconds, thresholds)
@@ -243,15 +277,16 @@ export function wake(input: HookInput, ctx: Ctx): number {
       },
       ctx.config,
     )
-  const startHandoff = (auto: boolean): number => {
+  // A handoff needs a turn (the model writes the brief), whatever the transport.
+  const startHandoff = (auto: boolean): WakeOutcome => {
     const path = requestHandoff(home, state, ctx.now, auto)
     state.pendingPing = true
+    state.pingTransport = 'turn'
     state.handoffRequested = true
     state.handoffPending = true
     state.lastPingAt = ctx.now
     saveSession(home, state)
-    ctx.stderr(`${handoffMessage(WAKE_MARKER, path)}\n`)
-    return 2
+    return { kind: 'handoff', message: handoffMessage(WAKE_MARKER, path) }
   }
   if (!decision.ping) {
     if (handoffDue(decision.reason)) {
@@ -259,7 +294,7 @@ export function wake(input: HookInput, ctx: Ctx): number {
       if (verdict !== 'skip') return startHandoff(verdict === 'handoff')
     }
     appendLedger(home, { ...base, event: 'skip', reason: decision.reason })
-    return 0
+    return { kind: 'none' }
   }
   // Last, so the command runs only for a ping that would really go out.
   const verdict = ctx.skipIf?.(facts) ?? 'ping'
@@ -267,10 +302,11 @@ export function wake(input: HookInput, ctx: Ctx): number {
     // 'handoff': someone else holds this session and does not want it kept warm.
     if (verdict === 'handoff' && handoffDue('holder')) return startHandoff(true)
     appendLedger(home, { ...base, event: 'skip', reason: verdict === 'handoff' ? 'holder' : 'skip-if' })
-    return 0
+    return { kind: 'none' }
   }
 
   state.pendingPing = true
+  state.pingTransport = transport
   state.pingsSoFar += 1
   state.lastPingAt = ctx.now
   saveSession(home, state)
@@ -279,9 +315,8 @@ export function wake(input: HookInput, ctx: Ctx): number {
     budget.updatedAt = ctx.now
     saveAwayBudget(home, budget)
   }
-  appendLedger(home, { ...base, event: 'ping', pings: state.pingsSoFar })
-  ctx.stderr(`${WAKE_MESSAGE}\n`)
-  return 2
+  appendLedger(home, { ...base, event: 'ping', pings: state.pingsSoFar, ...(transport === 'fork' ? { transport } : {}) })
+  return { kind: 'ping' }
 }
 
 /**

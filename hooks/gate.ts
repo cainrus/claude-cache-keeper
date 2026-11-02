@@ -14,6 +14,7 @@
  */
 
 import type { Register } from 'claude-code'
+import { beforeCompact, registerKeepalive } from './keepalive.ts'
 
 /** The spawn behind menu choice 2 may take a while (handoff-run.ts allows it 45 s). */
 const GATE_TIMEOUT_MS = 60_000
@@ -39,6 +40,9 @@ async function ask($, text: string, turn = false): Promise<string | undefined> {
 }
 
 export const register: Register = on => {
+  // A plugin loads one hooks module: the fork pings live in their own file.
+  registerKeepalive(on)
+
   // The text a turn began with: turn.step does not carry it.
   const began = new Map<string, string>()
 
@@ -61,8 +65,10 @@ export const register: Register = on => {
   })
 
   on('session.compact', async ($, e, next) => {
-    if (e.trigger !== 'manual') return next(e)
-    const reason = await ask($, '/compact')
-    return reason === undefined ? next(e) : { skip: reason }
+    if (e.trigger === 'manual' && e.agentId === undefined) {
+      const reason = await ask($, '/compact')
+      if (reason !== undefined) return { skip: reason }
+    }
+    return (await beforeCompact($, e)) ?? next(e)
   })
 }

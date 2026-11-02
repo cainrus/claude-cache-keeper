@@ -29,6 +29,8 @@ export type LedgerEvent =
   | 'handoff-new'
   | 'handoff-failed'
   | 'done'
+  | 'fork-failed'
+  | 'renew'
 
 export interface LedgerEntry {
   /** ISO timestamp. */
@@ -50,7 +52,9 @@ export interface LedgerEntry {
   outputTokens?: number
   /** ping / skip: keyboard idle seconds (null = unknown). */
   awaySeconds?: number | null
-  /** handoff-failed: which step refused (no-brief, spawn). */
+  /** ping / wake-hit / wake-miss: `fork` when the mod sent it as `$.model.fork`; absent = a wake turn. */
+  transport?: 'fork'
+  /** handoff-failed: which step refused (no-brief, spawn). fork-failed: the fork's reason (nothing-to-fork, api-error, ...). */
   failure?: string
   detail?: string
 }
