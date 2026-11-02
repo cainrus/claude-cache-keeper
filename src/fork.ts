@@ -12,6 +12,7 @@
  *   fork-wake      the mod's timer fired: none, a fork, or a turn (a handoff)
  *   forked         the fork's result: score it, or fall back to a wake turn
  *   compact-check  a compaction is about to run (anthropics/claude-code#105017)
+ *   compacted      a compaction finished: no pings until the next turn
  *
  * Each reads the hook-style JSON on stdin and answers one JSON line on stdout.
  * Without the mod (an older Claude Code, mods off) none of them runs, nothing
@@ -100,6 +101,17 @@ export function forkWake(input: ForkInput, ctx: Ctx): number {
   return answer(ctx, out.retryInSec !== undefined ? { action: 'none', dueInSec: out.retryInSec } : { action: 'none' })
 }
 
+/** The mod saw a compaction finish (not a precompute, not a skipped one); see `decideWake`. */
+export function compacted(input: ForkInput, ctx: Ctx): number {
+  const sid = input.session_id
+  const state = sid ? loadSession(ctx.config.home, sid) : undefined
+  if (state) {
+    state.compactedAt = ctx.now
+    saveSession(ctx.config.home, state)
+  }
+  return answer(ctx, { action: 'none' })
+}
+
 /**
  * Score the fork like `record` scores a wake turn. A fork that brought no
  * reply falls back to the wake turn, so a ping the policy granted still goes out.
@@ -123,7 +135,8 @@ export function forked(input: ForkInput, ctx: Ctx): number {
 
   const cacheRead = n(f.usage.cache_read_input_tokens)
   const cacheWrite = n(f.usage.cache_creation_input_tokens)
-  const denom = cacheRead + cacheWrite
+  // Input sent uncached counts against the hit, unlike a wake turn's few tokens of prompt.
+  const denom = cacheRead + cacheWrite + n(f.usage.input_tokens)
   const hit = denom > 0 && cacheRead / denom >= hitRatio
   state.pendingPing = false
   state.lastPingHit = hit

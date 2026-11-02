@@ -10,7 +10,8 @@
  *   timer            `fork-wake`, then `$.model.fork`, then `forked` to score it.
  *                    A fork with no reply falls back to the wake turn
  *   session.compact  `compact-check` (via gate.ts): after a stretch held by forks
- *                    alone, one wake turn goes first (anthropics/claude-code#105017)
+ *                    alone, one wake turn goes first (anthropics/claude-code#105017);
+ *                    `compacted` once it ran: the next ping is a wake turn
  *
  * Every step fails safe: a CLI that does not answer leaves the stretch
  * unpinged (cheap), never a second ping. Where the module does not load,
@@ -116,6 +117,16 @@ export async function keepaliveStarted($): Promise<void> {
 export function keepaliveTurnDone($, e): void {
   // Detached, so the turn's end is not held by a process spawn.
   if (e.agentId === undefined && !forking) $.clock.after(0, () => void afterTurn($))
+}
+
+/**
+ * Called by gate.ts's `session.compact` hook once the engine compacted: until
+ * the next turn sends it, the new prefix is in no cache, so the next ping goes
+ * as a wake turn (src/fork.ts). A precompute or a skipped compaction changed nothing.
+ */
+export function keepaliveCompacted($, e, result): void {
+  if (e.agentId !== undefined || e.trigger === 'precompute' || result?.skip !== undefined) return
+  $.clock.after(0, () => void cli($, 'compacted'))
 }
 
 /** Called by gate.ts's `session.compact` hook: `{ skip }` while a renewing turn goes first. */

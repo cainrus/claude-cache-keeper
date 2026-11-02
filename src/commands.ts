@@ -210,6 +210,16 @@ export function forkOwns(state: SessionState, config: Config): boolean {
   return armedAt !== undefined && armedAt >= (state.lastTurnEndAt ?? 0) - ARM_SLACK_MS
 }
 
+/**
+ * A compaction since the last request Claude Code sent (the mod reports it):
+ * the new prefix is in no cache yet, so there is nothing to hold. Measured: a
+ * fork after /compact sent the compacted 42k uncached and wrote none of it; a
+ * wake turn would write it all, which the person's own next turn pays anyway.
+ */
+export function compactedSinceRequest(state: SessionState): boolean {
+  return state.compactedAt !== undefined && state.compactedAt >= (state.lastRequestAt ?? 0)
+}
+
 /** A ping sent this recently and not scored yet is still on its way: a second one would double it. */
 export const PING_IN_FLIGHT_MS = 10 * 60_000
 
@@ -248,6 +258,10 @@ export function decideWake(input: HookInput, ctx: Ctx, transport: 'turn' | 'fork
   const turnStartedSince = (state.lastHumanAt ?? 0) > state.lastTurnEndAt
   if (turnStartedSince) return { kind: 'none' }
   if (ageSec < thresholds.minAgeSec) return { kind: 'none', retryInSec: thresholds.minAgeSec - ageSec + 1 }
+  if (compactedSinceRequest(state)) {
+    appendLedger(home, { t: iso(ctx.now), sessionId: sid, event: 'skip', reason: 'compacted', ctxTokens: state.ctxTokens, ageSec, model: state.model })
+    return { kind: 'none' }
+  }
 
   const awaySeconds = ctx.idleSeconds()
   const atKeyboard = isAtKeyboard(awaySeconds, thresholds)

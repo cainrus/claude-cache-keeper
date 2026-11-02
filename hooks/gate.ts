@@ -11,10 +11,14 @@
  *   session.compact   `/compact`, which sends the whole context cold.
  *
  * Every hook fails open: a broken gate lets the input through.
+ *
+ * It is also the plugin's one hooks module, so `session.start` and
+ * `turn.complete` here call the fork pings (keepalive.ts) and the status line
+ * (status.ts), and `session.compact` asks keepalive.ts after the gate.
  */
 
 import type { Register } from 'claude-code'
-import { beforeCompact, keepaliveStarted, keepaliveTurnDone } from './keepalive.ts'
+import { beforeCompact, keepaliveCompacted, keepaliveStarted, keepaliveTurnDone } from './keepalive.ts'
 import { statusStarted, statusTurnDone } from './status.ts'
 
 /** The spawn behind menu choice 2 may take a while (handoff-run.ts allows it 45 s). */
@@ -84,6 +88,10 @@ export const register: Register = on => {
       const reason = await ask($, '/compact')
       if (reason !== undefined) return { skip: reason }
     }
-    return (await beforeCompact($, e)) ?? next(e)
+    const renewFirst = await beforeCompact($, e)
+    if (renewFirst !== undefined) return renewFirst
+    const result = await next(e)
+    keepaliveCompacted($, e, result)
+    return result
   })
 }

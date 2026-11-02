@@ -56,6 +56,12 @@ export interface SessionState {
   lastRequestAt?: number
   /** Fork pings sent since `lastRequestAt`. */
   forkPingsHeld?: number
+  /**
+   * Epoch ms of the last compaction (the mod reports it). Until the next turn
+   * the compacted prefix was never sent as a request: a fork would replay it
+   * uncached and write none of it, so the next ping goes as a wake turn.
+   */
+  compactedAt?: number
 }
 
 export interface AwayBudget {

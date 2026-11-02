@@ -25,6 +25,7 @@ Stop ──► record      (sync)   remember when the cache was last touched and
                                exit 2 wakes the model with a one-line message; it replies "ok"
 UserPromptSubmit ──► touch     a real prompt closes the idle stretch (the wake's own prompt is ignored)
 SessionEnd       ──► end       forget the session
+turn.complete (mod) ──► arm    where the plugin's mod loads: claim the stretch, ping by fork instead (see Fork pings)
 ```
 
 The waiter is a plain `sleep`, so an idle session costs a ~1 MB process rather than a Node runtime. Every `Stop`
@@ -182,6 +183,7 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | `handoff.enabled` | `CACHE_KEEPER_HANDOFF` | `false` | write a brief before the cache dies and ask before a prompt hits it cold (see [Handoff](#handoff)) |
 | `handoff.*` | | | see [Handoff](#handoff) |
 | `statusLine` | — | `true` | show the cache line under the prompt (see [Status line](#status-line)) |
+| `forkPings` | `CACHE_KEEPER_FORK` | `true` | ping with a fork instead of a wake turn where the plugin's mod loads (see [Fork pings](#fork-pings)) |
 
 The defaults assume the 1-hour TTL of a subscription. On an API key the TTL is 5 minutes unless configured
 otherwise; the first ping will then miss and the oracle will mute the session, which is safe but useless.
@@ -198,6 +200,26 @@ Installed as a plugin, keeper pins one line under the prompt while the session's
 The line disappears once the cache is cold. It comes from keeper's own session record, refreshed a few seconds after
 each turn and every 30 s. It is a line of its own, not part of your `statusLine` command: Claude Code gives plugins no
 way into that slot. If your `statusLine` already shows keeper, set `"statusLine": false` in `config.json`.
+
+## Fork pings
+
+Installed as a plugin on a Claude Code with mods, keeper pings with `$.model.fork` instead of a wake turn. A fork
+replays the session's last request with one short question after it: the API reads the prefix from the cache, which
+renews it, and nothing is added to the transcript, so no other hook runs and the model never sees a ping.
+
+- The plugin's mod claims each idle stretch when a turn ends (`$CACHE_KEEPER_HOME/forks/<session>.json`) and runs its
+  own timer. The `Stop` sleeper finds the claim and stands down, so a stretch gets a fork or a wake turn, never both.
+- Every decision stays the CLI's: the same policy, budgets, tuning and ledger as a wake turn. The ledger marks a fork
+  ping with `"transport": "fork"`, and scores it from the fork's own usage.
+- A fork that brings no reply (`nothing-to-fork` right after `--resume`, an API error) falls back to the wake turn.
+- Where the mod does not load (no mods, an older Claude Code) nothing claims the stretch and the sleeper pings with a
+  wake turn as before. `"forkPings": false` or `CACHE_KEEPER_FORK=0` does the same on purpose.
+- A fork renews the cache on the server but not Claude Code's own idea of when it last sent a request
+  ([anthropics/claude-code#105017](https://github.com/anthropics/claude-code/issues/105017)): a compaction after an
+  hour held by forks alone would send the whole context uncached. So `/compact` (or a plugin's compaction) in such a
+  stretch is put off behind one wake turn, which reads the warm cache, and runs right after it.
+
+FORK_MEASURED
 
 ## Handoff
 
@@ -317,8 +339,9 @@ billed per token, but the same tokens count against usage limits.
 - **A session blocked on its own long tool call is not held.** `Stop` does not fire mid-turn.
 - **The 5-hour usage window is invisible.** Hooks never see response headers, so the keeper cannot back off when
   the window is nearly full.
-- **Each wake is a real (tiny) turn.** It appears in the transcript and runs your other `UserPromptSubmit` hooks;
-  their output is part of the ~1k tokens a wake writes.
+- **Without the mod, each wake is a real (tiny) turn.** It appears in the transcript and runs your other
+  `UserPromptSubmit` hooks; their output is part of the ~1k tokens a wake writes. [Fork pings](#fork-pings) avoid
+  that where the plugin's mod loads.
 - **`claude -p` is skipped on purpose.** In print mode async hooks are not backgrounded, so the waiter would hold
   a one-shot run open; it detects `CLAUDE_CODE_ENTRYPOINT=sdk-cli` and returns at once.
 - **No Windows support** — the waiter uses POSIX `sleep`.

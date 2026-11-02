@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { end, PING_IN_FLIGHT_MS, record, touch, wake, WAKE_MESSAGE } from '../src/commands.ts'
-import { arm, compactCheck, FORK_PROMPT, forked, forkWake, type ForkAnswer, type ForkResult } from '../src/fork.ts'
+import { arm, compactCheck, compacted, FORK_PROMPT, forked, forkWake, type ForkAnswer, type ForkResult } from '../src/fork.ts'
 import { readLedger } from '../src/ledger.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
 import { forkClaimPath, loadForkClaim, loadSession, saveForkClaim, saveSession } from '../src/state.ts'
@@ -274,6 +274,48 @@ test('compact-check: within the TTL of the last real turn Claude Code still trus
   call(forkWake, {}, ctxAt(config, T0 + DUE))
   call(forked, { fork: HIT }, ctxAt(config, T0 + DUE + 3000))
   assert.deepEqual(call(compactCheck, { trigger: 'plugin' }, ctxAt(config, T0 + DUE + 4000)), { action: 'pass' })
+})
+
+// --- after a compaction --------------------------------------------------------
+
+test('compacted: nothing is pinged until the next turn, by either transport', () => {
+  const { home, config, transcript } = setup()
+  arm({ session_id: SID }, ctxAt(config, T0 + 1000), INTERACTIVE)
+  call(compacted, {}, ctxAt(config, T0 + 2 * MIN))
+
+  assert.deepEqual(call(forkWake, {}, ctxAt(config, T0 + DUE)), { action: 'none' })
+  const skip = readLedger(home).at(-1)!
+  assert.equal(skip.event, 'skip')
+  assert.equal(skip.reason, 'compacted')
+  assert.equal(loadSession(home, SID)!.pingsSoFar, 0)
+  saveForkClaim(home, SID, T0 - 10 * MIN)
+  assert.equal(wake({ session_id: SID }, ctxAt(config, T0 + DUE)), 0)
+
+  // The next turn sends the compacted prefix itself: pings hold it from then on.
+  writeTranscript(home, [{ at: T0, ...BIG }, { at: T0 + 10 * MIN, read: 27_000, write: 42_000 }])
+  touch({ session_id: SID, prompt: 'go on' }, ctxAt(config, T0 + 10 * MIN - 5000))
+  record({ session_id: SID, transcript_path: transcript }, makeCtx(config, T0 + 10 * MIN + 500))
+  arm({ session_id: SID }, ctxAt(config, T0 + 10 * MIN + 600), INTERACTIVE)
+  assert.equal(call(forkWake, {}, ctxAt(config, T0 + 10 * MIN + DUE)).action, 'fork')
+})
+
+test('compacted: a compaction before the last turn changes nothing', () => {
+  const home = tempHome()
+  const config = configFor(home)
+  const transcript = writeTranscript(home, [{ at: T0, ...BIG }])
+  record({ session_id: SID, transcript_path: transcript }, makeCtx(config, T0 + 500))
+  call(compacted, {}, ctxAt(config, T0 - MIN))
+  arm({ session_id: SID }, ctxAt(config, T0 + 1000), INTERACTIVE)
+  assert.equal(call(forkWake, {}, ctxAt(config, T0 + DUE)).action, 'fork')
+})
+
+test('forked: input sent uncached counts against the hit (measured after /compact: 42k input, 27k read)', () => {
+  const { home, config } = setup()
+  arm({ session_id: SID }, ctxAt(config, T0 + 1000), INTERACTIVE)
+  call(forkWake, {}, ctxAt(config, T0 + DUE))
+  const fork = { isAnswered: true, usage: { input_tokens: 42_164, cache_read_input_tokens: 26_833, cache_creation_input_tokens: 1_432, output_tokens: 4 } }
+  call(forked, { fork }, ctxAt(config, T0 + DUE + 4000))
+  assert.equal(readLedger(home).at(-1)!.event, 'wake-miss')
 })
 
 // --- end -------------------------------------------------------------------------
