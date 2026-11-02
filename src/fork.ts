@@ -157,8 +157,12 @@ export function forked(input: ForkInput, ctx: Ctx): number {
   return answer(ctx, { action: 'none', dueInSec: delaySec })
 }
 
-/** Leeway under the TTL: Claude Code's own check may run on a slightly different clock. */
-const TTL_MARGIN_MS = 60_000
+/**
+ * Leeway under the TTL: Claude Code's own check may run on a slightly
+ * different clock, and `lastRequestAt` is when the last response ended, not
+ * when its request was sent.
+ */
+const TTL_MARGIN_MS = 5 * 60_000
 
 /**
  * anthropics/claude-code#105017: a fork renews the server's cache but not

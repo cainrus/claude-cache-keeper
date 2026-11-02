@@ -51,7 +51,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     statusStarted($)
-    await keepaliveStarted($)
+    keepaliveStarted($)
     return started
   })
 
