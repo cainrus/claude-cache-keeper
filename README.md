@@ -219,7 +219,22 @@ renews it, and nothing is added to the transcript, so no other hook runs and the
   hour held by forks alone would send the whole context uncached. So `/compact` (or a plugin's compaction) in such a
   stretch is put off behind one wake turn, which reads the warm cache, and runs right after it.
 
-FORK_MEASURED
+- After a compaction nothing of the new context is cached until a turn sends it, so there is nothing to hold:
+  keeper sends no ping until the next turn (ledger reason `compacted`).
+
+Measured on Claude Code 2.1.316 with a subscription (1-hour cache TTL):
+
+| observation | value |
+|---|---|
+| a marketplace install loads the plugin's mod, no opt-in | yes (`hooks module cache-keeper@claude-cache-keeper loaded`) |
+| fork ping 90 s after a turn: cache read / written / input | 58 435 / 3 088 / 4 (Sonnet) |
+| the next fork ping | 61 523 / 0 / 4 |
+| fork at +55 min after the only turn, then at +65 min: cache read | 59 362, then 59 362 (Haiku; the turn's own 1-hour write expired at +60) |
+| the `Stop` sleeper while the mod holds the stretch | stands down; no wake turn in the transcript |
+| a fork right after `/compact`, before any turn | 26 833 read, 42 164 sent uncached: why keeper skips it |
+
+The fork re-reads the cached prefix and so renews it for another hour; only its own short tail (the last answer and
+the question) is written, at the 5-minute TTL, and written again by the next fork.
 
 ## Handoff
 
