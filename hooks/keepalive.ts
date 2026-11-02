@@ -106,20 +106,16 @@ async function afterTurn($): Promise<void> {
   }
 }
 
-export function registerKeepalive(on): void {
-  on('session.start', async ($, e, next) => {
-    const result = await next(e)
-    const a = await cli($, 'arm', { reload: true })
-    if (a?.action === 'none') schedule($, a.dueInSec)
-    return result
-  })
+/** Called by gate.ts's `session.start` hook, after the engine started: a reload drops the timer. */
+export async function keepaliveStarted($): Promise<void> {
+  const a = await cli($, 'arm', { reload: true })
+  if (a?.action === 'none') schedule($, a.dueInSec)
+}
 
-  on('turn.complete', async ($, e, next) => {
-    const result = await next(e)
-    // Detached, so the turn's end is not held by a process spawn.
-    if (e.agentId === undefined && !forking) $.clock.after(0, () => void afterTurn($))
-    return result
-  })
+/** Called by gate.ts's `turn.complete` hook, after the engine finished the turn. */
+export function keepaliveTurnDone($, e): void {
+  // Detached, so the turn's end is not held by a process spawn.
+  if (e.agentId === undefined && !forking) $.clock.after(0, () => void afterTurn($))
 }
 
 /** Called by gate.ts's `session.compact` hook: `{ skip }` while a renewing turn goes first. */

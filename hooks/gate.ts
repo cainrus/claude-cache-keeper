@@ -14,7 +14,8 @@
  */
 
 import type { Register } from 'claude-code'
-import { beforeCompact, registerKeepalive } from './keepalive.ts'
+import { beforeCompact, keepaliveStarted, keepaliveTurnDone } from './keepalive.ts'
+import { statusStarted, statusTurnDone } from './status.ts'
 
 /** The spawn behind menu choice 2 may take a while (handoff-run.ts allows it 45 s). */
 const GATE_TIMEOUT_MS = 60_000
@@ -40,8 +41,22 @@ async function ask($, text: string, turn = false): Promise<string | undefined> {
 }
 
 export const register: Register = on => {
-  // A plugin loads one hooks module: the fork pings live in their own file.
-  registerKeepalive(on)
+  // A plugin loads one hooks module with one hook per event, so the other
+  // halves are called from here: the fork pings (keepalive.ts) and the pinned
+  // "cache ↻³ 14:05" line (status.ts).
+  on('session.start', async ($, e, next) => {
+    const started = await next(e)
+    statusStarted($)
+    await keepaliveStarted($)
+    return started
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    keepaliveTurnDone($, e)
+    statusTurnDone($)
+    return done
+  })
 
   // The text a turn began with: turn.step does not carry it.
   const began = new Map<string, string>()
