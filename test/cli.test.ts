@@ -114,6 +114,34 @@ test('e2e: record -> wait+wake pings -> wake turn scored -> human returns -> rep
   assert.ok(!existsSync(sessionPath(home, SID)))
 })
 
+/** The command line hooks/keepalive.ts runs; it reads the last stdout line as JSON. */
+function modCall(cmd: string, input: Record<string, unknown>, env: Record<string, string>): Record<string, unknown> {
+  const r = run(`node --disable-warning=ExperimentalWarning ${JSON.stringify(join(ROOT, 'bin/cache-keeper.ts'))} ${cmd}`, { session_id: SID, ...input }, env)
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(r.stderr, '')
+  const lines = r.stdout.trim().split('\n')
+  assert.equal(lines.length, 1, `one JSON line: ${r.stdout}`)
+  return JSON.parse(lines[0])
+}
+
+test('e2e: the mod claims the stretch -> the sleeper stands down -> fork-wake -> forked scores it', () => {
+  const { home, env, stop } = fresh()
+  run(command('Stop', 0), stop, env)
+  assert.deepEqual(modCall('arm', {}, env), { action: 'none', dueInSec: 0 })
+
+  const w = run(command('Stop', 1), stop, env)
+  assert.equal(w.status, 0)
+  assert.equal(w.stderr, '')
+
+  const f = modCall('fork-wake', {}, env)
+  assert.equal(f.action, 'fork')
+  assert.match(String(f.prompt), /\[cache-keeper\]/)
+  const fork = { isAnswered: true, usage: { input_tokens: 3, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 200, output_tokens: 2 } }
+  assert.deepEqual(modCall('forked', { fork }, env), { action: 'none', dueInSec: 0 })
+  assert.deepEqual(readLedger(home).map((e) => [e.event, e.transport]), [['ping', 'fork'], ['wake-hit', 'fork']])
+  assert.deepEqual(modCall('compact-check', { trigger: 'manual' }, env), { action: 'pass' })
+})
+
 test('e2e: a refusal exits 0 and says nothing to the model', () => {
   const { home, env, stop } = fresh()
   run(command('Stop', 0), stop, env)

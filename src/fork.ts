@@ -15,12 +15,13 @@
  *
  * Each reads the hook-style JSON on stdin and answers one JSON line on stdout.
  * Without the mod (an older Claude Code, mods off) none of them runs, nothing
- * sets `forkArmedAt`, and the Stop sleeper pings with a wake turn as before.
+ * writes the claim (`forks/<id>.json`), and the Stop sleeper pings with a wake
+ * turn as before. `CACHE_KEEPER_FORK=0` or `"forkPings": false` does the same.
  */
 
-import { decideWake, WAKE_MARKER, WAKE_MESSAGE, type Ctx, type HookInput } from './commands.ts'
+import { decideWake, forkOwns, WAKE_MARKER, WAKE_MESSAGE, type Ctx, type HookInput } from './commands.ts'
 import { appendLedger } from './ledger.ts'
-import { loadSession, saveSession } from './state.ts'
+import { loadSession, saveForkClaim, saveSession } from './state.ts'
 
 export const FORK_PROMPT = `${WAKE_MARKER} Reply with exactly "ok".`
 
@@ -67,22 +68,32 @@ function answer(ctx: Ctx, a: ForkAnswer): number {
  */
 export function arm(input: ForkInput, ctx: Ctx, env: NodeJS.ProcessEnv = process.env): number {
   const sid = input.session_id
-  const { home, enabled, forkPings, delaySec } = ctx.config
+  const { home, enabled, forkPings, delaySec, thresholds } = ctx.config
   if (!sid || !enabled || !forkPings || env.CLAUDE_CODE_ENTRYPOINT === 'sdk-cli') return answer(ctx, { action: 'none' })
   const state = loadSession(home, sid)
   if (!state) return answer(ctx, { action: 'none' })
-  state.forkArmedAt = ctx.now
-  // A fork in flight did not survive the reload: nothing will score it.
-  if (input.reload && state.pendingPing && state.pingTransport === 'fork') state.pendingPing = false
-  saveSession(home, state)
-  if (!input.reload) return answer(ctx, { action: 'none', dueInSec: delaySec })
+  if (!input.reload) {
+    saveForkClaim(home, sid, ctx.now)
+    return answer(ctx, { action: 'none', dueInSec: delaySec })
+  }
+  // A reload: what is left of the stretch, if anything. A resumed old session has none.
   if (state.lastTurnEndAt === undefined) return answer(ctx, { action: 'none' })
   const age = Math.floor((ctx.now - state.lastTurnEndAt) / 1000)
+  if (age >= thresholds.maxAgeSec) return answer(ctx, { action: 'none' })
+  saveForkClaim(home, sid, ctx.now)
+  // A fork in flight did not survive the reload: nothing will score it.
+  if (state.pendingPing && state.pingTransport === 'fork') {
+    state.pendingPing = false
+    saveSession(home, state)
+  }
   return answer(ctx, { action: 'none', dueInSec: Math.max(1, delaySec - age) })
 }
 
 /** The mod's timer fired: the same decision as the Stop sleeper's `wake`, delivered as JSON. */
 export function forkWake(input: ForkInput, ctx: Ctx): number {
+  const state = input.session_id ? loadSession(ctx.config.home, input.session_id) : undefined
+  // The claim failed at the last turn's end (a CLI that did not answer): the Stop sleeper pings this one.
+  if (!state || !forkOwns(state, ctx.config)) return answer(ctx, { action: 'none' })
   const out = decideWake(input, ctx, 'fork')
   if (out.kind === 'ping') return answer(ctx, { action: 'fork', prompt: FORK_PROMPT })
   if (out.kind === 'handoff') return answer(ctx, { action: 'turn', text: out.message })
@@ -118,9 +129,9 @@ export function forked(input: ForkInput, ctx: Ctx): number {
   state.lastPingHit = hit
   // The read renewed the cache now: the next ping is timed from here.
   state.lastTurnEndAt = ctx.now
-  state.forkArmedAt = ctx.now
   state.forkPingsHeld = (state.forkPingsHeld ?? 0) + 1
   saveSession(home, state)
+  saveForkClaim(home, sid, ctx.now)
   appendLedger(home, {
     ...base,
     event: hit ? 'wake-hit' : 'wake-miss',

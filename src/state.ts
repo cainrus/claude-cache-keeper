@@ -2,6 +2,7 @@
  * On-disk state under `$CACHE_KEEPER_HOME`:
  *
  *   sessions/<session_id>.json   per-session state
+ *   forks/<session_id>.json      when the mod last took the session's pings
  *   away-budget.json             the machine-wide away bucket
  *   ledger.jsonl                 one line per decision (see ledger.ts)
  *
@@ -45,12 +46,6 @@ export interface SessionState {
   resumeAt?: number
   /** Epoch ms of `/cache-keeper:done`: no pings until the next real prompt. */
   doneAt?: number
-  /**
-   * Epoch ms the plugin's mod (hooks/keepalive.ts) last took this session's
-   * pings. While it is not older than the last turn, the mod's own timer sends
-   * them as forks and the Stop sleeper stands down.
-   */
-  forkArmedAt?: number
   /** How the open ping went out: a fork (scored by `forked`) or a turn (scored by `record`). */
   pingTransport?: 'fork' | 'turn'
   /**
@@ -108,6 +103,27 @@ export function saveSession(home: string, state: SessionState): void {
 
 export function deleteSession(home: string, sessionId: string): void {
   rmSync(sessionPath(home, sessionId), { force: true })
+  rmSync(forkClaimPath(home, sessionId), { force: true })
+}
+
+/**
+ * `forks/<session_id>.json`: when the plugin's mod (hooks/keepalive.ts) last
+ * took this session's pings. While it is not older than the last turn, the
+ * mod's timer sends them as forks and the Stop sleeper stands down. A file of
+ * its own: the mod claims at turn end, just when `record` rewrites the session
+ * file, and one write would drop the other's.
+ */
+export function forkClaimPath(home: string, sessionId: string): string {
+  return join(home, 'forks', `${safeId(sessionId)}.json`)
+}
+
+export function loadForkClaim(home: string, sessionId: string): number | undefined {
+  const at = readJson<{ armedAt?: unknown }>(forkClaimPath(home, sessionId))?.armedAt
+  return typeof at === 'number' && Number.isFinite(at) ? at : undefined
+}
+
+export function saveForkClaim(home: string, sessionId: string, armedAt: number): void {
+  writeJsonAtomic(forkClaimPath(home, sessionId), { armedAt })
 }
 
 export function awayBudgetPath(home: string): string {

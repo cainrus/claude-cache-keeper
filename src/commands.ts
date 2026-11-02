@@ -18,6 +18,7 @@ import { decide, isAtKeyboard } from './policy.ts'
 import {
   deleteSession,
   loadAwayBudget,
+  loadForkClaim,
   loadSession,
   newSession,
   saveAwayBudget,
@@ -198,10 +199,19 @@ export function record(input: HookInput, ctx: Ctx): number {
 /** How long before the last turn the mod may have armed and still own its stretch (hook order varies). */
 export const ARM_SLACK_MS = 60_000
 
-/** Does the plugin's mod send this session's pings (fork.ts)? Then the Stop sleeper stands down. */
+/**
+ * Does the plugin's mod send this session's pings (fork.ts)? Then the Stop
+ * sleeper stands down; otherwise the mod does. One owner per stretch, so a
+ * stretch never gets both a fork and a wake turn.
+ */
 export function forkOwns(state: SessionState, config: Config): boolean {
-  return config.forkPings && state.forkArmedAt !== undefined && state.forkArmedAt >= (state.lastTurnEndAt ?? 0) - ARM_SLACK_MS
+  if (!config.forkPings) return false
+  const armedAt = loadForkClaim(config.home, state.sessionId)
+  return armedAt !== undefined && armedAt >= (state.lastTurnEndAt ?? 0) - ARM_SLACK_MS
 }
+
+/** A ping sent this recently and not scored yet is still on its way: a second one would double it. */
+export const PING_IN_FLIGHT_MS = 10 * 60_000
 
 /**
  * What a wake decided. `ping` and `handoff` are already recorded (state and
@@ -230,6 +240,7 @@ export function decideWake(input: HookInput, ctx: Ctx, transport: 'turn' | 'fork
   if (!enabled || !sid) return { kind: 'none' }
   const state = loadSession(home, sid)
   if (!state || state.lastTurnEndAt === undefined) return { kind: 'none' }
+  if (state.pendingPing && ctx.now - (state.lastPingAt ?? 0) < PING_IN_FLIGHT_MS) return { kind: 'none' }
 
   // A newer turn ended (or started) since this sleeper was armed: its own
   // sleeper owns the session now.
