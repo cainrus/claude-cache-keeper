@@ -55,6 +55,20 @@ test('before anything was sent, keeper says it is ready', () => {
   assert.equal(format({ kind: 'ready' }, 0), 'ready')
 })
 
+test('a request in the first turn, before any record, is cached with no renewal promised', () => {
+  const l = lineOf(undefined, {}, {}, T + 5 * MIN, undefined, T)
+  assert.deepEqual(l, cached(4, false, T + 60 * MIN))
+  assert.equal(format(l!, 0), 'cached till 09:00')
+  assert.deepEqual(lineOf(undefined, {}, {}, T + 60 * MIN, undefined, T), { kind: 'expired' })
+})
+
+test('a request newer than the record moves the deadline; an older one does not', () => {
+  assert.equal(pick(lineOf(session(), {}, {}, T + 50 * MIN, undefined, T + 40 * MIN)).warmUntil, T + 100 * MIN)
+  assert.equal(pick(lineOf(session({ lastPingAt: T + 30 * MIN }), {}, {}, T + 40 * MIN, undefined, T + 10 * MIN)).warmUntil, T + 90 * MIN)
+  // A record that went cold, then a long turn's request: warm again.
+  assert.equal(pick(lineOf(session(), {}, {}, T + 70 * MIN, undefined, T + 65 * MIN)).warmUntil, T + 125 * MIN)
+})
+
 test('a cold cache after a turn says so', () => {
   assert.deepEqual(lineOf(session(), {}, {}, T + 60 * MIN), { kind: 'expired' })
   assert.deepEqual(lineOf(session(), { cacheTtlSec: 300 }, {}, T + 6 * MIN), { kind: 'expired' })

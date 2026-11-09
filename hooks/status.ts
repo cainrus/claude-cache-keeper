@@ -11,8 +11,18 @@
  *   (nothing)                     keeper is off or `"statusLine": false`
  *
  * Read from keeper's own files, not the policy: keeper writes
- * `sessions/<id>.json` at every turn end. Refreshed on load, a few seconds
- * after each turn (the Stop hook writes the record then) and every 30 s.
+ * `sessions/<id>.json` at every turn end. The record lags a running turn, so
+ * the time of each model request this process sends counts too: the first
+ * turn shows `cached till` from its first request, not `ready` until it ends.
+ * Refreshed on load, at each request, a few seconds after each turn (the
+ * Stop hook writes the record then) and every 30 s.
+ *
+ * A session continued in another one (`/background` writes a `continued-in`
+ * entry and the old id ends) starts at `ready` and inherits nothing, until its
+ * own first request. Whether that request reads the old cache depends on the
+ * setup: on a plain install it read all of it; SessionStart hooks that add
+ * context may change the prefix so it reads none, which is why nothing is
+ * inherited.
  * Node is checked once on load: the hooks run `.ts` under the user's `node`, and
  * a missing or old one fails without a word.
  *
@@ -56,18 +66,29 @@ export function shown(config: Json, env: { disabled?: string }): boolean {
   return config.enabled !== false && config.statusLine !== false && !truthy(env.disabled)
 }
 
-/** What to show, or undefined for nothing. Pure, so the tests can drive it. */
-export function lineOf(session: Json | undefined, config: Json, env: { maxPings?: string; minCtxTokens?: string; disabled?: string }, now: number, tuning?: Json): Line | undefined {
+/**
+ * What to show, or undefined for nothing. Pure, so the tests can drive it.
+ * `requestedAt`: this session's last model request seen by the mod, ms since the epoch.
+ */
+export function lineOf(
+  session: Json | undefined,
+  config: Json,
+  env: { maxPings?: string; minCtxTokens?: string; disabled?: string },
+  now: number,
+  tuning?: Json,
+  requestedAt?: number,
+): Line | undefined {
   if (!shown(config, env)) return undefined
-  const lastSent = Math.max(num(session?.lastTurnEndAt) ?? 0, num(session?.lastPingAt) ?? 0)
-  if (session === undefined || lastSent === 0) return { kind: 'ready' }
+  const lastSent = Math.max(num(session?.lastTurnEndAt) ?? 0, num(session?.lastPingAt) ?? 0, requestedAt ?? 0)
+  if (lastSent === 0) return { kind: 'ready' }
   const warmUntil = lastSent + (num(config.cacheTtlSec) ?? DEFAULT_TTL_SEC) * 1000
   if (now >= warmUntil) return { kind: 'expired' }
   // As keeper resolves it: env, then config.json, else the cap tune.ts last chose.
   const max = envNum(env.maxPings) ?? num(config.maxPings) ?? num(tuning?.maxPings) ?? DEFAULT_MAX_PINGS
-  const left = Math.max(0, max - (num(session.pingsSoFar) ?? 0))
-  const bigEnough = (num(session.ctxTokens) ?? 0) >= (envNum(env.minCtxTokens) ?? num(config.minCtxTokens) ?? DEFAULT_MIN_CTX_TOKENS)
-  const muted = session.doneAt !== undefined
+  const left = Math.max(0, max - (num(session?.pingsSoFar) ?? 0))
+  // No record yet (the first turn is still running): keeper has nothing to ping from, so no `renews`.
+  const bigEnough = (num(session?.ctxTokens) ?? 0) >= (envNum(env.minCtxTokens) ?? num(config.minCtxTokens) ?? DEFAULT_MIN_CTX_TOKENS)
+  const muted = session?.doneAt !== undefined
   return { kind: 'cached', left, extends: left > 0 && bigEnough && !muted, warmUntil }
 }
 
@@ -92,6 +113,9 @@ export function nodeOk(version: string): boolean {
 
 /** undefined until the check on load has answered. */
 let nodeBroken: boolean | undefined
+
+/** The last main-thread model request of this process, with the session it went to (`/clear` changes it). */
+let requested: { sid: string; at: number } | undefined
 
 async function checkNode($): Promise<void> {
   try {
@@ -129,7 +153,7 @@ async function refresh($): Promise<void> {
     }
     if (nodeBroken) return $.ui.status(shown(config ?? {}, env) ? NODE_ERROR : undefined)
     const now = await $.clock.now()
-    const line = lineOf(session, config ?? {}, env, now, tuning)
+    const line = lineOf(session, config ?? {}, env, now, tuning, requested?.sid === sid ? requested.at : undefined)
     $.ui.status(line === undefined ? undefined : format(line, new Date(line.kind === 'cached' ? line.warmUntil : now).getTimezoneOffset()))
   } catch {
     $.ui.status(undefined)
@@ -140,6 +164,16 @@ async function refresh($): Promise<void> {
 export function statusStarted($): void {
   void checkNode($).then(() => refresh($))
   $.clock.every(EVERY_MS, () => refresh($))
+}
+
+/** Called by gate.ts's `turn.step` hook as a main-thread request goes out. */
+export async function statusRequested($): Promise<void> {
+  try {
+    requested = { sid: await $.session.id(), at: await $.clock.now() }
+  } catch {
+    return
+  }
+  await refresh($)
 }
 
 /** Called by gate.ts's `turn.complete` hook. */

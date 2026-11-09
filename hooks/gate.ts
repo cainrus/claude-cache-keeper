@@ -19,7 +19,7 @@
 
 import type { Register } from 'claude-code'
 import { beforeCompact, keepaliveCompacted, keepaliveStarted, keepaliveTurnDone } from './keepalive.ts'
-import { statusStarted, statusTurnDone } from './status.ts'
+import { statusRequested, statusStarted, statusTurnDone } from './status.ts'
 
 /** The spawn behind menu choice 2 may take a while (handoff-run.ts allows it 45 s). */
 const GATE_TIMEOUT_MS = 60_000
@@ -80,6 +80,8 @@ export const register: Register = on => {
         return { turnId: e.turnId, index: e.index, answer: reason, toolUses: [], stopReason: 'end_turn', usage: null }
       }
     }
+    // The request goes out: the cache is written now, long before the turn's Stop records it.
+    if (e.agentId === undefined) void statusRequested($)
     return yield* next(e)
   })
 
