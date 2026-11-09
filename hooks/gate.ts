@@ -47,7 +47,7 @@ async function ask($, text: string, turn = false): Promise<string | undefined> {
 export const register: Register = on => {
   // A plugin loads one hooks module with one hook per event, so the other
   // halves are called from here: the fork pings (keepalive.ts) and the pinned
-  // "cache ↻³ 14:05" line (status.ts).
+  // "cached till 14:05" line (status.ts).
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     statusStarted($)

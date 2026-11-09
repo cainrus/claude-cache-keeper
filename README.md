@@ -190,15 +190,18 @@ otherwise; the first ping will then miss and the oracle will mute the session, w
 
 ## Status line
 
-Installed as a plugin, keeper pins one line under the prompt while the session's cache is warm:
+Installed as a plugin, keeper pins one line under the prompt (Claude Code shows it as `⚠ cache-keeper: …`):
 
-- `cache ↻³ 14:05`: the cache stays warm until 14:05, and keeper will extend it; ³ is how many pings it has left in
-  this stretch.
-- `cache → 14:05`: no ping is coming (none left, the context is too small to hold, or the session is muted), so 14:05
-  is final.
+- `ready`: keeper is on; nothing has been sent in this session yet.
+- `cached till 14:05 · renews ×3`: the cache stays warm until 14:05, and keeper will extend it; 3 is how many pings
+  it has left in this stretch.
+- `cached till 14:05`: no ping is coming (none left, the context is too small to hold, or the session is muted), so
+  14:05 is final.
+- `cache expired`: the cache went cold; the next turn rewrites the whole context.
+- `error: needs Node.js ≥ 22.18`: `node` on `PATH` is missing or too old to run the hooks, so keeper does nothing.
 
-The line disappears once the cache is cold. It comes from keeper's own session record, refreshed a few seconds after
-each turn and every 30 s. It is a line of its own, not part of your `statusLine` command: Claude Code gives plugins no
+It comes from keeper's own session record, refreshed a few seconds after each turn and every 30 s; Node is checked
+once when the session starts. It is a line of its own, not part of your `statusLine` command: Claude Code gives plugins no
 way into that slot. If your `statusLine` already shows keeper, set `"statusLine": false` in `config.json`.
 
 ## Fork pings
