@@ -22,7 +22,7 @@ ping into a session nobody returns to is pure waste. This project is mostly that
 ```
 Stop ──► record      (sync)   remember when the cache was last touched and how big it is
      └─► sleep 3000; wake     (asyncRewake) decide: exit 0 = let it go, exit 2 = ping
-                               exit 2 wakes the model with a one-line message; it replies "ok"
+                               exit 2 wakes the model with a one-line message; it replies "ok" (or what it is waiting for)
 UserPromptSubmit ──► touch     a real prompt closes the idle stretch (the wake's own prompt is ignored)
 SessionEnd       ──► end       forget the session
 turn.complete (mod) ──► arm    where the plugin's mod loads: claim the stretch, ping by fork instead (see Fork pings)

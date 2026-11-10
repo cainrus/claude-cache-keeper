@@ -28,9 +28,10 @@ import {
 import { firstMainUsageSince, lastMainUsage } from './transcript.ts'
 import { tunedMaxPings } from './tune.ts'
 import type { SessionFacts, Verdict } from './veto.ts'
+import { WAKE_REPLY } from './wake-text.ts'
 
 export const WAKE_MARKER = '[cache-keeper] Prompt-cache keep-alive.'
-export const WAKE_MESSAGE = `${WAKE_MARKER} Reply with exactly "ok". No tools, no commentary.`
+export const WAKE_MESSAGE = `${WAKE_MARKER} ${WAKE_REPLY}`
 
 export interface HookInput {
   session_id?: string

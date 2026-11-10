@@ -42,6 +42,7 @@ import { appendLedger, type RefusalReason } from './ledger.ts'
 import { postNotice } from './notices.ts'
 import { basePrice, MULT } from './report.ts'
 import { readJson, writeJsonAtomic, type SessionState } from './state.ts'
+import { WAKE_REPLY } from './wake-text.ts'
 
 /** Refusals after which the keeper would let a still-warm cache die. */
 export const HANDOFF_REASONS: readonly RefusalReason[] = ['away', 'away-budget-spent', 'budget-spent', 'holder']
@@ -130,8 +131,8 @@ export function handoffMessage(marker: string, path: string): string {
     `commands that matter; open questions; the exact next step. Under the heading "${TASK_LIST_HEADING}" list ` +
     `every open step in order, one per line as "- [in_progress] subject — what is left" or "- [pending] ...", ` +
     `or write "none". Then add the last few exchanges, condensed, under the heading "## Last exchanges". ` +
-    `Change nothing else. ` +
-    `Then reply with exactly "ok".`
+    `Change nothing else. After the brief: ` +
+    WAKE_REPLY
   )
 }
 

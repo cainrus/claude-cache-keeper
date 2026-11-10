@@ -24,6 +24,8 @@ import { decideWake, forkOwns, WAKE_MARKER, WAKE_MESSAGE, type Ctx, type HookInp
 import { appendLedger } from './ledger.ts'
 import { loadSession, saveForkClaim, saveSession } from './state.ts'
 
+// Not WAKE_REPLY: a fork's answer never reaches the transcript, so nobody reads it as the session's last word.
+// A turn sent instead of a fork (fallback, renew) does reach it, and carries WAKE_MESSAGE.
 export const FORK_PROMPT = `${WAKE_MARKER} Reply with exactly "ok".`
 
 /** What the mod hands `forked`: `$.model.fork`'s result, as it came back. */

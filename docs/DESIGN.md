@@ -68,8 +68,20 @@ Two `Stop` hooks and one `UserPromptSubmit` hook, all the same entry point
    `prompt` and ignored.
 5. **`SessionEnd` → `end`** deletes the session state.
 
-The wake message is fixed and short:
-`[cache-keeper] Prompt-cache keep-alive. Reply with exactly "ok". No tools, no commentary.`
+The wake message is fixed, one line; its second half (`WAKE_REPLY`, `src/wake-text.ts`) also ends
+the handoff wake:
+
+```
+[cache-keeper] Prompt-cache keep-alive. Reply with one short line and no further tools: "ok", or "ok, waiting for <what>" while anything is pending (background work, an answer). This wake is not a stop: an open task stays open, and whatever this session waits for still resumes it.
+```
+
+Why not a bare "ok": a wake often lands on a session that is idle only because it waits for
+something (a queued bench run, a CI wait, an answer it asked for). A bare "ok" then becomes its last turn, and whoever
+watches the session (a human, an orchestrating session, a job status line) reads "idle, done" and
+nudges a session that was about to resume on its own. A reply that names the wait keeps it visible
+for a few output tokens. Every wake that lands in the transcript carries this text, including the
+turn a fork ping falls back to; the fork itself keeps a bare "ok", since its answer is never
+recorded.
 
 ## Policy (`src/policy.ts`, pure)
 
