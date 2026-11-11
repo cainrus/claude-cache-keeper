@@ -57,6 +57,8 @@ export interface LedgerEntry {
   transport?: 'fork'
   /** handoff-failed: which step refused (no-brief, spawn). fork-failed: the fork's reason (nothing-to-fork, api-error, ...). */
   failure?: string
+  /** fork-failed: what follows it: another fork, the wake turn, or nothing (too late to land warm). */
+  next?: 'retry' | 'turn' | 'drop'
   detail?: string
 }
 

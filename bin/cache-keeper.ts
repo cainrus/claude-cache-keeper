@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { end, gate, record, touch, wake, type Ctx, type HookInput } from '../src/commands.ts'
 import { loadConfig } from '../src/config.ts'
-import { arm, compactCheck, compacted, forked, forkWake } from '../src/fork.ts'
+import { arm, compactCheck, compacted, forked, forkRetry, forkWake } from '../src/fork.ts'
 import { realIO } from '../src/handoff-run.ts'
 import { buildHooks, shellQuote, waitCommand } from '../src/hooks.ts'
 import { readLedger } from '../src/ledger.ts'
@@ -31,6 +31,7 @@ Hook subcommands (read the hook input JSON on stdin):
                     command or a compaction reaches the model; same menu as touch
   arm, fork-wake,   called by the plugin's mod (hooks/keepalive.ts), which sends pings as
   forked,           $.model.fork; each answers one JSON line (see src/fork.ts)
+  fork-retry,
   compact-check,
   compacted
 
@@ -70,6 +71,7 @@ const HOOKS: Record<string, (input: HookInput, ctx: Ctx) => number> = {
   arm: (input, ctx) => arm(input, ctx),
   'fork-wake': forkWake,
   forked,
+  'fork-retry': forkRetry,
   'compact-check': compactCheck,
   compacted,
 }

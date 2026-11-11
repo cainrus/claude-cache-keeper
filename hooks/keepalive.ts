@@ -8,7 +8,8 @@
  *   turn.complete    `arm`: the mod takes the stretch, the next ping is due one delay on
  *   session.start    `arm` after a reload, which drops this module's timers
  *   timer            `fork-wake`, then `$.model.fork`, then `forked` to score it.
- *                    A fork with no reply falls back to the wake turn
+ *                    A fork with no reply is sent again (`fork-retry`) while it can still
+ *                    land warm, then falls back to the wake turn, or to nothing past maxAgeSec
  *   session.compact  `compact-check` (via gate.ts): after a stretch held by forks
  *                    alone, one wake turn goes first (anthropics/claude-code#105017);
  *                    `compacted` once it ran: the next ping is a wake turn
@@ -32,6 +33,7 @@ type Answer =
   | { action: 'turn'; text: string }
   | { action: 'pass' }
   | { action: 'renew'; text: string }
+  | { action: 'retry'; afterSec: number }
 
 // One copy per load: a reload starts these over, and session.start re-arms.
 let timer: { cancel: () => void } | undefined
@@ -89,18 +91,30 @@ async function tick($): Promise<void> {
   const a = await cli($, 'fork-wake')
   if (a?.action === 'none') return reschedule($, a.dueInSec)
   if (a?.action === 'turn') return submit($, a.text)
-  if (a?.action !== 'fork') return
+  if (a?.action === 'fork') await sendFork($, a.prompt)
+}
+
+/** `forked` answered `retry`: ask `fork-retry` once the pause is over. */
+async function retryTick($): Promise<void> {
+  timer = undefined
+  const a = await cli($, 'fork-retry')
+  if (a?.action === 'fork') await sendFork($, a.prompt)
+}
+
+async function sendFork($, prompt: string): Promise<void> {
   forking = true
   let r
   try {
-    r = await fork($, a.prompt)
+    r = await fork($, prompt)
   } finally {
     forking = false
   }
   const result = r.isAnswered ? { isAnswered: true, usage: r.usage } : { isAnswered: false, reason: r.reason }
   const s = await cli($, 'forked', { fork: result })
   if (s?.action === 'turn') return submit($, s.text)
-  if (s?.action === 'none') reschedule($, s.dueInSec)
+  if (s?.action === 'none') return reschedule($, s.dueInSec)
+  // On `timer`, so a turn that ends meanwhile cancels it by arming its own.
+  if (s?.action === 'retry' && timer === undefined) timer = $.clock.after(s.afterSec * 1000, () => void retryTick($))
 }
 
 /**

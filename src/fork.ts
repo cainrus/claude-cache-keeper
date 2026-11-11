@@ -10,7 +10,8 @@
  *
  *   arm            the mod took the session (a turn ended, or the mod reloaded)
  *   fork-wake      the mod's timer fired: none, a fork, or a turn (a handoff)
- *   forked         the fork's result: score it, or fall back to a wake turn
+ *   forked         the fork's result: score it, send it again, fall back to a wake turn, or drop it
+ *   fork-retry     the retry timer fired: the fork again, or nothing
  *   compact-check  a compaction is about to run (anthropics/claude-code#105017)
  *   compacted      a compaction finished: no pings until the next turn
  *
@@ -55,6 +56,7 @@ export type ForkAnswer =
   | { action: 'turn'; text: string }
   | { action: 'pass' }
   | { action: 'renew'; text: string }
+  | { action: 'retry'; afterSec: number }
 
 const iso = (ms: number) => new Date(ms).toISOString()
 const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
@@ -87,6 +89,7 @@ export function arm(input: ForkInput, ctx: Ctx, env: NodeJS.ProcessEnv = process
   // A fork in flight did not survive the reload: nothing will score it.
   if (state.pendingPing && state.pingTransport === 'fork') {
     state.pendingPing = false
+    delete state.forkRetries
     saveSession(home, state)
   }
   return answer(ctx, { action: 'none', dueInSec: Math.max(1, delaySec - age) })
@@ -114,13 +117,31 @@ export function compacted(input: ForkInput, ctx: Ctx): number {
   return answer(ctx, { action: 'none' })
 }
 
+/** Forks re-sent for one ping before it falls back to the wake turn. */
+export const MAX_FORK_RETRIES = 2
+/** Pause before a re-sent fork: a failure is mostly the network or the API, rarely gone at once. */
+export const FORK_RETRY_SEC = 60
+/** The mod's own limit on one fork (hooks/keepalive.ts, FORK_TIMEOUT_MS). */
+export const FORK_TIMEOUT_SEC = 120
+/** Failures a second fork cannot fix. */
+const FINAL_FORK_FAILURES = new Set(['nothing-to-fork'])
+
+/** Seconds since the cache was last read or written. */
+function cacheAgeSec(state: { lastTurnEndAt?: number }, now: number): number {
+  return Math.floor((now - (state.lastTurnEndAt ?? 0)) / 1000)
+}
+
 /**
  * Score the fork like `record` scores a wake turn. A fork that brought no
- * reply falls back to the wake turn, so a ping the policy granted still goes out.
+ * reply is sent again while a re-sent one can still land under `maxAgeSec`,
+ * then falls back to the wake turn. Past `maxAgeSec` nothing goes out: a
+ * request that late finds the cache gone and writes the whole prefix, which
+ * the person's own next turn pays anyway (measured: a fallback turn delayed by
+ * a network outage landed 13 min after the failed fork and wrote 436k).
  */
 export function forked(input: ForkInput, ctx: Ctx): number {
   const sid = input.session_id
-  const { home, hitRatio, delaySec } = ctx.config
+  const { home, hitRatio, delaySec, thresholds } = ctx.config
   if (!sid) return answer(ctx, { action: 'none' })
   const state = loadSession(home, sid)
   if (!state || !state.pendingPing || state.pingTransport !== 'fork') return answer(ctx, { action: 'none' })
@@ -128,10 +149,29 @@ export function forked(input: ForkInput, ctx: Ctx): number {
   const base = { t: iso(ctx.now), sessionId: sid, ctxTokens: state.ctxTokens, model: state.model }
 
   if (!f?.isAnswered || !f.usage) {
-    state.pingTransport = 'turn'
+    const failure = f?.reason ?? 'no-result'
+    const ageSec = cacheAgeSec(state, ctx.now)
+    const retries = state.forkRetries ?? 0
+    const retry =
+      !FINAL_FORK_FAILURES.has(failure) &&
+      retries < MAX_FORK_RETRIES &&
+      ageSec + FORK_RETRY_SEC + FORK_TIMEOUT_SEC <= thresholds.maxAgeSec
+    const next = retry ? 'retry' : ageSec < thresholds.maxAgeSec ? 'turn' : 'drop'
+    appendLedger(home, { ...base, event: 'fork-failed', failure, next, ageSec })
     state.lastPingAt = ctx.now
+    if (next === 'retry') {
+      state.forkRetries = retries + 1
+      saveSession(home, state)
+      return answer(ctx, { action: 'retry', afterSec: FORK_RETRY_SEC })
+    }
+    delete state.forkRetries
+    if (next === 'drop') {
+      state.pendingPing = false
+      saveSession(home, state)
+      return answer(ctx, { action: 'none' })
+    }
+    state.pingTransport = 'turn'
     saveSession(home, state)
-    appendLedger(home, { ...base, event: 'fork-failed', failure: f?.reason ?? 'no-result' })
     return answer(ctx, { action: 'turn', text: WAKE_MESSAGE })
   }
 
@@ -140,6 +180,7 @@ export function forked(input: ForkInput, ctx: Ctx): number {
   // Input sent uncached counts against the hit, unlike a wake turn's few tokens of prompt.
   const denom = cacheRead + cacheWrite + n(f.usage.input_tokens)
   const hit = denom > 0 && cacheRead / denom >= hitRatio
+  delete state.forkRetries
   state.pendingPing = false
   state.lastPingHit = hit
   // The read renewed the cache now: the next ping is timed from here.
@@ -157,6 +198,30 @@ export function forked(input: ForkInput, ctx: Ctx): number {
     outputTokens: n(f.usage.output_tokens),
   })
   return answer(ctx, { action: 'none', dueInSec: delaySec })
+}
+
+/**
+ * The mod's retry timer fired (`forked` answered `retry`): the fork goes again
+ * unless a turn took the stretch meanwhile, or it could no longer land warm.
+ */
+export function forkRetry(input: ForkInput, ctx: Ctx): number {
+  const sid = input.session_id
+  const { home, thresholds } = ctx.config
+  const state = sid ? loadSession(home, sid) : undefined
+  if (!state || !state.pendingPing || state.pingTransport !== 'fork' || !state.forkRetries) {
+    return answer(ctx, { action: 'none' })
+  }
+  const turnSince = (state.lastHumanAt ?? 0) > (state.lastPingAt ?? 0)
+  const tooLate = cacheAgeSec(state, ctx.now) + FORK_TIMEOUT_SEC > thresholds.maxAgeSec
+  if (turnSince || tooLate) {
+    state.pendingPing = false
+    delete state.forkRetries
+    saveSession(home, state)
+    return answer(ctx, { action: 'none' })
+  }
+  state.lastPingAt = ctx.now
+  saveSession(home, state)
+  return answer(ctx, { action: 'fork', prompt: FORK_PROMPT })
 }
 
 /**

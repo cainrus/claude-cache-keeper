@@ -2,7 +2,19 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { end, PING_IN_FLIGHT_MS, record, touch, wake, WAKE_MESSAGE } from '../src/commands.ts'
-import { arm, compactCheck, compacted, FORK_PROMPT, forked, forkWake, type ForkAnswer, type ForkResult } from '../src/fork.ts'
+import {
+  arm,
+  compactCheck,
+  compacted,
+  FORK_PROMPT,
+  FORK_RETRY_SEC,
+  FORK_TIMEOUT_SEC,
+  forked,
+  forkRetry,
+  forkWake,
+  type ForkAnswer,
+  type ForkResult,
+} from '../src/fork.ts'
 import { readLedger } from '../src/ledger.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
 import { forkClaimPath, loadForkClaim, loadSession, saveForkClaim, saveSession } from '../src/state.ts'
@@ -194,6 +206,69 @@ test('forked: a fork with no reply falls back to the wake turn, which record the
   record({ session_id: SID, transcript_path: transcript, stop_hook_active: true }, makeCtx(config, at + 3500))
   assert.equal(readLedger(home).at(-1)!.event, 'wake-hit')
   assert.equal(loadSession(home, SID)!.pendingPing, false)
+})
+
+const TIMEOUT: ForkResult = { isAnswered: false, reason: 'timeout' }
+const SEC = 1000
+
+test('forked: a timed-out fork is sent again while it can land warm, then falls back to the wake turn', () => {
+  const { home, config } = setup()
+  arm({ session_id: SID }, ctxAt(config, T0 + 1000), INTERACTIVE)
+  call(forkWake, {}, ctxAt(config, T0 + DUE))
+  // 53 min: a retry (1 min pause + 2 min fork) still lands under maxAgeSec.
+  let t = T0 + DUE + FORK_TIMEOUT_SEC * SEC
+  assert.deepEqual(call(forked, { fork: TIMEOUT }, ctxAt(config, t)), { action: 'retry', afterSec: FORK_RETRY_SEC })
+  assert.equal(readLedger(home).at(-1)!.next, 'retry')
+  assert.equal(loadSession(home, SID)!.forkRetries, 1)
+
+  t += FORK_RETRY_SEC * SEC
+  assert.deepEqual(call(forkRetry, {}, ctxAt(config, t)), { action: 'fork', prompt: FORK_PROMPT })
+  // 56 min: another retry would land past maxAgeSec, the turn still lands under it.
+  t += FORK_TIMEOUT_SEC * SEC
+  assert.deepEqual(call(forked, { fork: TIMEOUT }, ctxAt(config, t)), { action: 'turn', text: WAKE_MESSAGE })
+  const s = loadSession(home, SID)!
+  assert.equal(s.pingTransport, 'turn')
+  assert.equal(s.forkRetries, undefined)
+  assert.equal(readLedger(home).at(-1)!.next, 'turn')
+  assert.equal(readLedger(home).filter((e) => e.event === 'ping').length, 1, 'retries spend no extra ping')
+})
+
+test('forked: a fork that fails past maxAgeSec sends nothing, since a request that late rewrites the prefix', () => {
+  const { home, config } = setup()
+  arm({ session_id: SID }, ctxAt(config, T0 + 1000), INTERACTIVE)
+  call(forkWake, {}, ctxAt(config, T0 + DUE))
+  const late = T0 + T.maxAgeSec * SEC
+  assert.deepEqual(call(forked, { fork: TIMEOUT }, ctxAt(config, late)), { action: 'none' })
+  const e = readLedger(home).at(-1)!
+  assert.equal(e.event, 'fork-failed')
+  assert.equal(e.next, 'drop')
+  const s = loadSession(home, SID)!
+  assert.equal(s.pendingPing, false)
+  assert.equal(s.pingTransport, 'fork')
+})
+
+test('forked: a final failure (nothing-to-fork) skips the retry', () => {
+  const { config } = setup()
+  arm({ session_id: SID }, ctxAt(config, T0 + 1000), INTERACTIVE)
+  call(forkWake, {}, ctxAt(config, T0 + DUE))
+  const a = call(forked, { fork: { isAnswered: false, reason: 'nothing-to-fork' } }, ctxAt(config, T0 + DUE + SEC))
+  assert.equal(a.action, 'turn')
+})
+
+test('fork-retry: a real prompt during the pause takes the stretch, no fork goes out', () => {
+  const { home, config } = setup()
+  arm({ session_id: SID }, ctxAt(config, T0 + 1000), INTERACTIVE)
+  call(forkWake, {}, ctxAt(config, T0 + DUE))
+  const t = T0 + DUE + FORK_TIMEOUT_SEC * SEC
+  call(forked, { fork: TIMEOUT }, ctxAt(config, t))
+  touch({ session_id: SID, prompt: 'hi' }, ctxAt(config, t + 10 * SEC))
+  assert.deepEqual(call(forkRetry, {}, ctxAt(config, t + FORK_RETRY_SEC * SEC)), { action: 'none' })
+  assert.equal(loadSession(home, SID)!.pendingPing, false)
+})
+
+test('fork-retry: nothing open answers none', () => {
+  const { config } = setup()
+  assert.deepEqual(call(forkRetry, {}, ctxAt(config, T0 + DUE)), { action: 'none' })
 })
 
 test('forked: nothing open to score answers none and logs nothing', () => {

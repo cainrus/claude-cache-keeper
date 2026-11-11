@@ -333,6 +333,7 @@ export function decideWake(input: HookInput, ctx: Ctx, transport: 'turn' | 'fork
 
   state.pendingPing = true
   state.pingTransport = transport
+  delete state.forkRetries
   state.pingsSoFar += 1
   state.lastPingAt = ctx.now
   saveSession(home, state)

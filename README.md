@@ -214,7 +214,11 @@ renews it, and nothing is added to the transcript, so no other hook runs and the
   own timer. The `Stop` sleeper finds the claim and stands down, so a stretch gets a fork or a wake turn, never both.
 - Every decision stays the CLI's: the same policy, budgets, tuning and ledger as a wake turn. The ledger marks a fork
   ping with `"transport": "fork"`, and scores it from the fork's own usage.
-- A fork that brings no reply (`nothing-to-fork` right after `--resume`, an API error) falls back to the wake turn.
+- A fork that brings no reply (a timeout, an API error) is sent again after a minute, up to twice, while a re-sent
+  fork can still land under `maxAgeSec`; then it falls back to the wake turn. `nothing-to-fork` (right after
+  `--resume`) goes to the wake turn at once. Past `maxAgeSec` nothing goes out: a request that late finds the cache
+  gone and writes the whole prefix again, which the person's next turn would pay anyway. The ledger's `fork-failed`
+  line says which (`"next": "retry" | "turn" | "drop"`).
 - Where the mod does not load (no mods, an older Claude Code) nothing claims the stretch and the sleeper pings with a
   wake turn as before. `"forkPings": false` or `CACHE_KEEPER_FORK=0` does the same on purpose.
 - A fork renews the cache on the server but not Claude Code's own idea of when it last sent a request

@@ -48,6 +48,8 @@ export interface SessionState {
   doneAt?: number
   /** How the open ping went out: a fork (scored by `forked`) or a turn (scored by `record`). */
   pingTransport?: 'fork' | 'turn'
+  /** Forks re-sent for the open ping after one came back with no reply (`forked`). */
+  forkRetries?: number
   /**
    * Epoch ms of the last main-thread request Claude Code itself saw (a real
    * turn or a wake turn). A fork renews the server's cache but not Claude
