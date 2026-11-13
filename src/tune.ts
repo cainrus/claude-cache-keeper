@@ -127,13 +127,13 @@ export function loadTuning(home: string): Tuning | undefined {
 }
 
 /** The cap to use now; recomputed from the ledger at most once per `TUNE.intervalMs`. */
-export function tunedMaxPings(config: Pick<Config, 'home' | 'cacheTtlSec'>, now: number): number {
+export function tunedMaxPings(config: Pick<Config, 'home' | 'cacheTtlSec'> & Partial<Pick<Config, 'prices'>>, now: number): number {
   const prev = loadTuning(config.home)
   if (prev && now - prev.computedAt < TUNE.intervalMs && now >= prev.computedAt) return prev.maxPings
   const since = now - TUNE.windowMs
   const entries = readLedger(config.home).filter((e) => Date.parse(e.t) >= since)
   const from = prev?.maxPings ?? THRESHOLDS.maxPings
-  const breakeven = measuredBreakeven(entries)
+  const breakeven = measuredBreakeven(entries, config.prices)
   const stats = positionStats(entries, config.cacheTtlSec)
   const next: Tuning = { ...decideCap(from, stats, breakeven), computedAt: now, from, breakeven, stats }
   try {

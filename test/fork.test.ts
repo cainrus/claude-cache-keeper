@@ -420,6 +420,40 @@ test('wait: a question holds the turn open; forks keep the cache, never a wake t
   assert.deepEqual(call(forkWake, {}, ctxAt(config, answered + DUE)), { action: 'none' })
 })
 
+test('wait: a fork in flight when the answer comes is scored, but a failed one sends nothing into the turn', () => {
+  const { home, config } = setup()
+  const asked = T0 + 6 * MIN
+  waitStart({ session_id: SID }, ctxAt(config, asked), INTERACTIVE)
+  assert.equal(call(forkWake, {}, ctxAt(config, asked + DUE)).action, 'fork')
+  call(waitEnd, {}, ctxAt(config, asked + DUE + 1000))
+  // api-error would be retried, or fall back to a wake turn, before the person came back.
+  assert.deepEqual(call(forked, { fork: { isAnswered: false, reason: 'api-error' } }, ctxAt(config, asked + DUE + 2000)), { action: 'none' })
+  assert.equal(readLedger(home).at(-1)?.next, 'drop')
+  assert.equal(loadSession(home, SID)!.pendingPing, false)
+})
+
+test('wait: a fork parked on its retry is closed by the answer; no handoff starts during a wait', () => {
+  const { home, config } = setup({ CACHE_KEEPER_HANDOFF: '1', CACHE_KEEPER_HANDOFF_MIN_CTX_TOKENS: '1000' })
+  const asked = T0 + 6 * MIN
+  waitStart({ session_id: SID }, ctxAt(config, asked), INTERACTIVE)
+  assert.equal(call(forkWake, {}, ctxAt(config, asked + DUE)).action, 'fork')
+  assert.equal(call(forked, { fork: { isAnswered: false, reason: 'api-error' } }, ctxAt(config, asked + DUE + 1000)).action, 'retry')
+  call(waitEnd, {}, ctxAt(config, asked + DUE + 30_000))
+  assert.equal(loadSession(home, SID)!.pendingPing, false, 'the mod dropped the retry timer with the wait')
+
+  // The stretch's pings spent: a handoff would be due; while a question waits, it is a plain skip.
+  const W = T0 + 2 * 60 * MIN
+  waitStart({ session_id: SID }, ctxAt(config, W), INTERACTIVE)
+  const s = loadSession(home, SID)!
+  s.pingsSoFar = 50
+  saveSession(home, s)
+  assert.deepEqual(call(forkWake, {}, ctxAt(config, W + DUE)), { action: 'none' })
+  const after = loadSession(home, SID)!
+  assert.equal(after.handoffRequested, undefined)
+  assert.equal(after.pendingPing, false)
+  assert.ok(!readLedger(home).some((e) => e.event === 'handoff-request'))
+})
+
 test('wait: off without forks, for a session never recorded, and under claude -p', () => {
   const { home, config } = setup({ CACHE_KEEPER_FORK: '0' })
   assert.deepEqual(call(waitStart, {}, ctxAt(config, T0 + MIN)), { action: 'none' })

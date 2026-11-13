@@ -106,8 +106,8 @@ export function forkWake(input: ForkInput, ctx: Ctx): number {
   if (!state || !forkOwns(state, ctx.config)) return answer(ctx, { action: 'none' })
   const out = decideWake(input, ctx, 'fork')
   if (out.kind === 'ping') return answer(ctx, { action: 'fork', prompt: FORK_PROMPT })
-  // A handoff is a turn, and a turn held open by a question takes none.
-  if (out.kind === 'handoff' && state.waitingSince === undefined) return answer(ctx, { action: 'turn', text: out.message })
+  // decideWake starts no handoff while a question waits (a handoff is a turn).
+  if (out.kind === 'handoff') return answer(ctx, { action: 'turn', text: out.message })
   return answer(ctx, out.retryInSec !== undefined ? { action: 'none', dueInSec: out.retryInSec } : { action: 'none' })
 }
 
@@ -186,6 +186,9 @@ export function waitEnd(input: ForkInput, ctx: Ctx): number {
     })
     state.resumeAt = ctx.now
   }
+  // A fork waiting on its retry timer: the mod dropped that timer with the wait, so nothing would close it.
+  // A fork still in flight is left to `forked`, which scores it and sends nothing after it.
+  if (state.pendingPing && state.pingTransport === 'fork' && state.forkRetries) closePing(state)
   state.pingsSoFar = 0
   state.lastHumanAt = ctx.now
   delete state.waitingSince
@@ -232,14 +235,18 @@ export function forked(input: ForkInput, ctx: Ctx): number {
     const ageSec = cacheAgeSec(state, ctx.now)
     const retries = state.forkRetries ?? 0
     const manual = state.pingManual === true
+    // The person came back (a prompt, or the answer to a question) since this ping went out:
+    // their own turn reaches the cache now, and a fallback turn would land inside it.
+    const personBack = (state.lastHumanAt ?? 0) > (state.lastPingAt ?? 0)
     const retry =
       !manual &&
+      !personBack &&
       !FINAL_FORK_FAILURES.has(failure) &&
       retries < MAX_FORK_RETRIES &&
       ageSec + FORK_RETRY_SEC + FORK_TIMEOUT_SEC <= thresholds.maxAgeSec
     // A turn held open by a question takes no wake turn: a prompt sent now would land inside it.
     const waiting = state.waitingSince !== undefined
-    const next = retry ? 'retry' : manual || (!waiting && ageSec < thresholds.maxAgeSec) ? 'turn' : 'drop'
+    const next = retry ? 'retry' : manual || (!waiting && !personBack && ageSec < thresholds.maxAgeSec) ? 'turn' : 'drop'
     appendLedger(home, { ...base, event: 'fork-failed', failure, next, ageSec })
     state.lastPingAt = ctx.now
     if (next === 'retry') {

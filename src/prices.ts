@@ -47,7 +47,20 @@ export const DEFAULT_PRICES: PriceTable = {
   'claude-sonnet-4': rate(3),
   'claude-haiku-5-5': rate(0.1, undefined, { over100k: rate(0.5) }),
   'claude-haiku-4': rate(1),
+  // Ids older than the 4 line, still in old ledgers.
+  'claude-3-opus': rate(15),
+  'claude-3-7-sonnet': rate(3),
+  'claude-3-5-sonnet': rate(3),
+  'claude-3-5-haiku': rate(0.8),
+  'claude-3-haiku': rate(0.25),
   default: rate(5),
+}
+
+/** Bedrock and Vertex spell ids with a provider prefix (`us.anthropic.claude-…`, `anthropic.claude-…`). */
+function bareId(model: string): string {
+  const m = model.toLowerCase()
+  const at = m.indexOf('claude-')
+  return at > 0 ? m.slice(at) : m
 }
 
 /**
@@ -73,6 +86,8 @@ export function mergePrices(overrides: unknown): PriceTable {
       cacheRead: pos(o.cacheRead) ?? keep?.cacheRead ?? input * 0.1,
       cacheWrite: pos(o.cacheWrite) ?? keep?.cacheWrite ?? input * 2,
       output: pos(o.output) ?? keep?.output ?? input * 5,
+      // A row tuned field by field keeps its long-prompt tier; a new input price drops it.
+      ...(keep?.over100k ? { over100k: keep.over100k } : {}),
     }
   }
   // A family key ("opus", the pre-0.6.6 form) rewrites every table row it names; model prefixes after it.
@@ -89,7 +104,7 @@ export function mergePrices(overrides: unknown): PriceTable {
 
 /** The row for a model: the longest key that prefixes its id, else one it contains (an override like "opus"), else default. */
 export function rowFor(model: string | undefined, prices: PriceTable): { key: string; rate: Rate } {
-  const m = (model ?? '').toLowerCase()
+  const m = bareId(model ?? '')
   let best: string | undefined
   for (const key of Object.keys(prices)) {
     if (key === 'default') continue

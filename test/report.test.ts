@@ -16,6 +16,12 @@ test('prices: the longest model prefix wins, an unknown model is default', () =>
   assert.equal(rowFor('claude-fable-5-2', DEFAULT_PRICES).key, 'claude-fable-5-2')
   assert.equal(rowFor('claude-sonnet-5-5', DEFAULT_PRICES).key, 'claude-sonnet-5-5')
   assert.equal(rowFor('claude-opus-9', DEFAULT_PRICES).key, 'default')
+  // Provider-prefixed and pre-4 ids.
+  assert.equal(rowFor('us.anthropic.claude-sonnet-4-5-20250929-v1:0', DEFAULT_PRICES).key, 'claude-sonnet-4')
+  assert.equal(rowFor('anthropic.claude-haiku-5-5', DEFAULT_PRICES).key, 'claude-haiku-5-5')
+  assert.equal(rowFor('claude-3-5-haiku-20241022', DEFAULT_PRICES).key, 'claude-3-5-haiku')
+  // An object override keeps Haiku 5.5's long-prompt tier.
+  assert.equal(rateFor('claude-haiku-5-5', mergePrices({ 'claude-haiku-5-5': { output: 0.6 } }), 150_000).input, 0.5)
   assert.equal(rowFor(undefined, DEFAULT_PRICES).key, 'default')
   // Opus 5.5: $4 in, $0.20 read (0.05x), $8 1h write, $20 out.
   assert.deepEqual(rateFor('claude-opus-5-5', DEFAULT_PRICES), { input: 4, cacheRead: 0.2, cacheWrite: 8, output: 20 })

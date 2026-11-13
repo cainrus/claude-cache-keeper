@@ -313,7 +313,9 @@ export function decideWake(input: HookInput, ctx: Ctx, transport: 'turn' | 'fork
   const base = { t: iso(ctx.now), sessionId: sid, ctxTokens: state.ctxTokens, ageSec, model: state.model, awaySeconds }
   const facts = { sessionId: sid, transcriptPath: state.transcriptPath, lastPromptAt: state.lastHumanAt }
   // The keeper is letting a warm cache go: spend its last warm turn on a summary instead.
+  // Not while a question holds the turn open: a handoff is a turn, and none may land inside it.
   const handoffDue = (reason: RefusalReason): boolean =>
+    state.waitingSince === undefined &&
     state.transcriptPath !== undefined &&
     wantsHandoff(
       {
