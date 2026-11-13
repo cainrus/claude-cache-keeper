@@ -6,6 +6,7 @@ import {
   arm,
   compactCheck,
   compacted,
+  compactedStart,
   FORK_PROMPT,
   FORK_RETRY_SEC,
   FORK_TIMEOUT_SEC,
@@ -372,6 +373,20 @@ test('compacted: nothing is pinged until the next turn, by either transport', ()
   record({ session_id: SID, transcript_path: transcript }, makeCtx(config, T0 + 10 * MIN + 500))
   arm({ session_id: SID }, ctxAt(config, T0 + 10 * MIN + 600), INTERACTIVE)
   assert.equal(call(forkWake, {}, ctxAt(config, T0 + 10 * MIN + DUE)).action, 'fork')
+})
+
+test('compacted-start: without the mod, the SessionStart after /compact stops the Stop sleeper too (#3709)', () => {
+  const { home, config } = setup()
+  const out: string[] = []
+  assert.equal(compactedStart({ session_id: SID }, { ...ctxAt(config, T0 + 2 * MIN), stdout: (t: string) => out.push(t) }), 0)
+  assert.deepEqual(out, [], 'a SessionStart hook prints nothing: its stdout would reach the model')
+  assert.equal(loadSession(home, SID)!.compactedAt, T0 + 2 * MIN)
+  // The sleeper armed by the last Stop wakes: no ping, a `compacted` skip.
+  assert.equal(wake({ session_id: SID }, ctxAt(config, T0 + DUE)), 0)
+  assert.equal(readLedger(home).at(-1)?.reason, 'compacted')
+  assert.equal(loadSession(home, SID)!.pingsSoFar, 0)
+  // An unknown session is left alone.
+  assert.equal(compactedStart({ session_id: 'nobody' }, ctxAt(config, T0)), 0)
 })
 
 test('compacted: a compaction before the last turn changes nothing', () => {

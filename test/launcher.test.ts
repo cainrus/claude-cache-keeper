@@ -181,6 +181,22 @@ test('launcher, a node keeper can run on: check is silent, the rest reaches cach
   assert.match(r.stdout, /^\d+\.\d+\.\d+\n$/)
 })
 
+test('launcher, Node fits: check is silent, and only a compact start reaches node to mark the session', () => {
+  const home = tempHome()
+  const sid = '00000000-0000-4000-8000-0000000000cc'
+  mkdirSync(join(home, 'sessions'), { recursive: true })
+  const statePath = join(home, 'sessions', `${sid}.json`)
+  writeFileSync(statePath, JSON.stringify({ sessionId: sid, pingsSoFar: 0, pendingPing: false, lastPingHit: null, lastTurnEndAt: 1 }))
+  const path = process.env.PATH ?? ''
+  const startup = launch('check', path, home, {}, `{"session_id":"${sid}","source":"startup"}`)
+  assert.equal(startup.stdout, '')
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).compactedAt, undefined)
+  const compact = launch('check', path, home, {}, `{"session_id":"${sid}","hook_event_name":"SessionStart","source": "compact"}`)
+  assert.equal(compact.status, 0, compact.stderr)
+  assert.equal(compact.stdout, '', 'nothing for the model')
+  assert.equal(typeof JSON.parse(readFileSync(statePath, 'utf8')).compactedAt, 'number')
+})
+
 test('package.json engines names the same floor', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.engines.node, '>=22.18')

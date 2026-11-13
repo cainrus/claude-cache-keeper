@@ -121,6 +121,23 @@ export function compacted(input: ForkInput, ctx: Ctx): number {
   return answer(ctx, { action: 'none' })
 }
 
+/**
+ * The same, from the `SessionStart` hook Claude Code runs after a compaction
+ * (source `compact`; bin/cache-keeper.sh calls node only then), so a session
+ * without the mod learns of it too: the Stop sleeper armed before `/compact`
+ * would otherwise ping the old, larger context into a cache that holds none of
+ * the new one (#3709). Prints nothing: a SessionStart hook's stdout reaches the model.
+ */
+export function compactedStart(input: HookInput, ctx: Ctx): number {
+  const sid = input.session_id
+  const state = sid ? loadSession(ctx.config.home, sid) : undefined
+  if (state && (state.compactedAt === undefined || state.compactedAt < ctx.now)) {
+    state.compactedAt = ctx.now
+    saveSession(ctx.config.home, state)
+  }
+  return 0
+}
+
 /** Forks re-sent for one ping before it falls back to the wake turn. */
 export const MAX_FORK_RETRIES = 2
 /** Pause before a re-sent fork: a failure is mostly the network or the API, rarely gone at once. */

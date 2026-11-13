@@ -38,7 +38,14 @@ if [ -n "$major" ]; then
 fi
 
 if [ -n "$ok" ]; then
-  [ "$1" = check ] && exit 0
+  if [ "$1" = check ]; then
+    # Node fits. Only a SessionStart after a compaction has work for node:
+    # the compacted prefix is in no cache yet, so pings wait for the next turn.
+    input=$(cat)
+    printf '%s' "$input" | tr -d '\n\r' | grep -Eq '"source"[[:space:]]*:[[:space:]]*"compact"' || exit 0
+    printf '%s' "$input" | node --disable-warning=ExperimentalWarning "$(dirname "$0")/cache-keeper.ts" compacted-start
+    exit 0
+  fi
   exec node --disable-warning=ExperimentalWarning "$(dirname "$0")/cache-keeper.ts" "$@"
 fi
 

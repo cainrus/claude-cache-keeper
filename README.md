@@ -265,7 +265,9 @@ renews it, and nothing is added to the transcript, so no other hook runs and the
   stretch is put off behind one wake turn, which reads the warm cache, and runs right after it.
 
 - After a compaction nothing of the new context is cached until a turn sends it, so there is nothing to hold:
-  keeper sends no ping until the next turn (ledger reason `compacted`).
+  keeper sends no ping until the next turn (ledger reason `compacted`). Without mods too: the `SessionStart` hook
+  Claude Code runs after a compaction marks the session, so the `Stop` sleeper armed before `/compact` does not ping
+  the old, larger context into a cache that holds none of the new one.
 
 Measured on Claude Code 2.1.316 with a subscription (1-hour cache TTL):
 
