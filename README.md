@@ -164,9 +164,10 @@ unknown.
 **Node is not part of Claude Code.** The native installer is one binary with no Node in it, and `/plugin install`
 checks none. So every hook enters through `bin/cache-keeper.sh`, which checks `node --version` first: with no Node,
 or one too old, keeper does nothing and never shows a hook error. Each new session then opens with one line saying
-why, and once per machine (again only if the problem changes, say Node 20 turned up) Claude is told to offer, after
-your first request, to set Node up with the version manager already on the machine. Say no and it is not raised
-again. Keeper itself never installs anything. With mods, the status line shows `error: needs Node.js ≥ 22.18` too.
+why, and once per machine for each kind of problem (no Node, too old, no version printed), on a fresh interactive
+start, Claude is told to offer, after your first request, to set Node up with the version manager already on the
+machine. Say no and it is not raised again. Keeper turned off (`CACHE_KEEPER_DISABLED`, `"enabled": false`) says
+nothing. Keeper itself never installs anything. With mods, the status line shows `error: needs Node.js ≥ 22.18` too.
 
 ```sh
 node --version   # v22.18.0 or later

@@ -1,0 +1,2 @@
+# A CRLF checkout (Windows, core.autocrlf) would break the hook launcher under sh.
+*.sh text eol=lf

@@ -29,9 +29,11 @@ function pathWith(version: string | undefined): string {
   return `${dir}:${process.env.PATH ?? '/usr/bin:/bin'}`
 }
 
-function launch(sub: string, path: string, home = tempHome(), env: Record<string, string> = {}) {
+const STARTUP = '{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}'
+
+function launch(sub: string, path: string, home = tempHome(), env: Record<string, string> = {}, input = STARTUP) {
   return spawnSync('sh', [LAUNCHER, sub], {
-    input: '{}',
+    input,
     encoding: 'utf8',
     env: { PATH: path, HOME: home, CACHE_KEEPER_HOME: home, ...env },
     timeout: 30_000,
@@ -62,37 +64,75 @@ for (const [name, version, why] of BAD) {
   })
 }
 
-test('launcher: the model is asked to offer the setup once per machine, again only for a new problem', () => {
+const noteOf = (r: { stdout: string }) => JSON.parse(r.stdout).hookSpecificOutput
+
+test('launcher: the model is asked to offer the setup once per machine for each kind of problem', () => {
   const home = tempHome()
-  const first = JSON.parse(launch('check', pathWith(undefined), home).stdout)
-  assert.match(first.hookSpecificOutput.additionalContext, /AskUserQuestion/)
-  assert.equal(first.hookSpecificOutput.hookEventName, 'SessionStart')
+  const first = noteOf(launch('check', pathWith(undefined), home))
+  assert.match(first.additionalContext, /AskUserQuestion/)
+  assert.equal(first.hookEventName, 'SessionStart')
   // The next session: the person still sees the line, the model is not asked again.
-  const second = JSON.parse(launch('check', pathWith(undefined), home).stdout)
-  assert.ok(second.systemMessage)
-  assert.equal(second.hookSpecificOutput, undefined)
-  // Node 20 appeared since: a different problem, asked once more.
-  const third = JSON.parse(launch('check', pathWith('v20.1.0'), home).stdout)
-  assert.match(third.hookSpecificOutput.additionalContext, /found v20\.1\.0/)
+  const second = launch('check', pathWith(undefined), home)
+  assert.ok(JSON.parse(second.stdout).systemMessage)
+  assert.equal(noteOf(second), undefined)
+  // Node 20 appeared since: another kind of problem, asked once more.
+  assert.match(noteOf(launch('check', pathWith('v20.1.0'), home)).additionalContext, /found v20\.1\.0/)
+  // A minor upgrade within "too old", or Node gone again: both already asked.
+  assert.equal(noteOf(launch('check', pathWith('v20.2.0'), home)), undefined)
+  assert.equal(noteOf(launch('check', pathWith(undefined), home)), undefined)
 })
 
-test('launcher: a headless run gets the line but no note (nobody to ask), and spends no ask', () => {
+test('launcher: no note, and no ask spent, outside a fresh interactive start', () => {
   const home = tempHome()
-  const headless = JSON.parse(launch('check', pathWith(undefined), home, { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }).stdout)
-  assert.equal(headless.hookSpecificOutput, undefined)
-  assert.ok(JSON.parse(launch('check', pathWith(undefined), home).stdout).hookSpecificOutput)
+  for (const entry of ['sdk-cli', 'sdk-ts', 'sdk-py']) {
+    const r = launch('check', pathWith(undefined), home, { CLAUDE_CODE_ENTRYPOINT: entry })
+    assert.ok(JSON.parse(r.stdout).systemMessage, entry)
+    assert.equal(noteOf(r), undefined, entry)
+  }
+  for (const source of ['resume', 'clear', 'compact']) {
+    assert.equal(noteOf(launch('check', pathWith(undefined), home, {}, `{"source":"${source}"}`)), undefined, source)
+  }
+  assert.ok(noteOf(launch('check', pathWith(undefined), home)))
 })
 
-test('launcher: CACHE_KEEPER_DISABLED keeps check quiet', () => {
-  const r = launch('check', pathWith(undefined), tempHome(), { CACHE_KEEPER_DISABLED: '1' })
-  assert.equal(r.status, 0)
-  assert.equal(r.stdout, '')
+test('launcher: keeper turned off keeps check quiet, as src/config.ts reads it', () => {
+  for (const off of ['1', 'True', ' YES ', 'on']) {
+    const r = launch('check', pathWith(undefined), tempHome(), { CACHE_KEEPER_DISABLED: off })
+    assert.equal(r.status, 0)
+    assert.equal(r.stdout, '', off)
+  }
+  const home = tempHome()
+  writeFileSync(join(home, 'config.json'), '{\n  "handoff": { "enabled": true },\n  "enabled" : false\n}\n')
+  assert.equal(launch('check', pathWith(undefined), home).stdout, '')
+  // handoff's own "enabled": false is not keeper's.
+  const handoffOff = tempHome()
+  writeFileSync(join(handoffOff, 'config.json'), '{"handoff":{"enabled":false,"x":{"y":1}},"enabled":true}')
+  assert.ok(JSON.parse(launch('check', pathWith(undefined), handoffOff).stdout).systemMessage)
 })
 
-test('launcher: an unwritable home still says why, without the note', () => {
-  const r = launch('check', pathWith(undefined), '/nonexistent/keeper-home')
+test('launcher: a home that cannot be made still says why, without the note', () => {
+  const parent = join(tempHome(), 'a-file')
+  writeFileSync(parent, '')
+  // A path under a regular file: mkdir fails even for root.
+  const r = launch('check', pathWith(undefined), join(parent, 'home'))
   assert.equal(r.status, 0, r.stderr)
-  assert.equal(JSON.parse(r.stdout).hookSpecificOutput, undefined)
+  assert.equal(noteOf(r), undefined)
+})
+
+test('launcher: stdin, arguments and the exit code pass through to cache-keeper.ts', () => {
+  const dir = join(tempHome(), 'fake-bin')
+  mkdirSync(dir, { recursive: true })
+  const seen = join(dir, 'seen')
+  // A node that fits, and that records what it was handed instead of running keeper.
+  writeFileSync(
+    join(dir, 'node'),
+    `#!/bin/sh\n[ "$1" = --version ] && { echo v24.1.0; exit 0; }\nshift 2\necho "$*" > '${seen}.args'\ncat > '${seen}.in'\nexit 2\n`,
+  )
+  chmodSync(join(dir, 'node'), 0o755)
+  const r = launch('wake', `${dir}:${process.env.PATH ?? ''}`, tempHome(), {}, '{"session_id":"s9"}')
+  assert.equal(r.status, 2)
+  assert.equal(readFileSync(`${seen}.args`, 'utf8'), 'wake\n')
+  assert.equal(readFileSync(`${seen}.in`, 'utf8'), '{"session_id":"s9"}')
 })
 
 test('launcher and hooks/status.ts nodeOk agree on the threshold', () => {

@@ -48,11 +48,15 @@ Two `Stop` hooks and one `UserPromptSubmit` hook, all the same entry point
 natively (22.18+, 23.6+, 24+) and otherwise exits 0 in silence. Claude Code
 ships no Node and `/plugin install` checks none, so a fourth hook,
 `SessionStart` → `check`, is where a missing or old one is said: a
-`systemMessage` every session, and once per machine and per problem (the
-`node-asked` file in keeper's home) an `additionalContext` note asking the
-model to offer the setup with AskUserQuestion after the first request. Not
-under `claude -p`: nobody to ask. A button would need the mod, which cannot
-run where the problem is most likely, a first install.
+`systemMessage` every session, and once per machine for each kind of problem
+(none, too old, no version; the `node-asked` file in keeper's home) an
+`additionalContext` note asking the model to offer the setup with
+AskUserQuestion after the first request. Only on `source: startup`, and not
+in an SDK run (`CLAUDE_CODE_ENTRYPOINT=sdk-*`): nobody to ask. A real button
+would need the mod, and many sessions run without mods; a hook can only print
+a line or add context.
+Keeper turned off (env or a top-level `"enabled": false`) says nothing.
+Not covered: Windows paths with backslashes in `$0` (untested under Git Bash).
 
 1. **`Stop` → `record`** (synchronous, fast). Reads the hook input, reads the
    last assistant `usage` from `transcript_path`, updates the session state:
