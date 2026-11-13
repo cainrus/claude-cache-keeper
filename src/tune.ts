@@ -94,7 +94,7 @@ export function measuredBreakeven(entries: LedgerEntry[]): number {
   let sum = 0
   let n = 0
   for (const e of entries) {
-    if (e.event !== 'wake-hit' || tok(e.ctxTokens) === 0) continue
+    if (e.event !== 'wake-hit' || e.detail === 'handoff' || tok(e.ctxTokens) === 0) continue
     const cost =
       tok(e.inputTokens) * MULT.input +
       tok(e.cacheRead) * MULT.cacheRead +

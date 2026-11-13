@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { format, lineOf, nodeOk } from '../hooks/status.ts'
+import { decide, THRESHOLDS } from '../src/policy.ts'
 
 const T = 1_800_000_000_000
 const MIN = 60_000
@@ -30,11 +31,14 @@ test('no ping left, a small context or a muted session make the deadline final',
   assert.equal(format(lineOf(session({ pingsSoFar: 4 }), { maxPings: 4 }, {}, T)!, 0), 'cached till 09:00')
   assert.equal(pick(lineOf(session({ ctxTokens: 1000 }), {}, {}, T)).extends, false)
   assert.equal(pick(lineOf(session({ doneAt: T }), {}, {}, T)).extends, false)
+  assert.equal(pick(lineOf(session({ lastPingHit: false }), {}, {}, T)).extends, false)
+  assert.equal(pick(lineOf(session({ lastPingHit: true }), {}, {}, T)).extends, true)
   assert.equal(pick(lineOf(session({ pingsSoFar: 9 }), { maxPings: 4 }, {}, T)).left, 0)
 })
 
-test('the last ping counts as the last request', () => {
-  assert.equal(pick(lineOf(session({ lastPingAt: T + 30 * MIN }), {}, {}, T + 70 * MIN)).warmUntil, T + 90 * MIN)
+test('a ping granted but not back renews nothing; a confirmed one moved lastTurnEndAt', () => {
+  assert.deepEqual(lineOf(session({ lastPingAt: T + 30 * MIN }), {}, {}, T + 70 * MIN), { kind: 'expired' })
+  assert.equal(pick(lineOf(session({ lastTurnEndAt: T + 30 * MIN }), {}, {}, T + 70 * MIN)).warmUntil, T + 90 * MIN)
 })
 
 test('the env cap wins over config.json, as in keeper itself', () => {
@@ -64,7 +68,7 @@ test('a request in the first turn, before any record, is cached with no renewal 
 
 test('a request newer than the record moves the deadline; an older one does not', () => {
   assert.equal(pick(lineOf(session(), {}, {}, T + 50 * MIN, undefined, T + 40 * MIN)).warmUntil, T + 100 * MIN)
-  assert.equal(pick(lineOf(session({ lastPingAt: T + 30 * MIN }), {}, {}, T + 40 * MIN, undefined, T + 10 * MIN)).warmUntil, T + 90 * MIN)
+  assert.equal(pick(lineOf(session({ lastTurnEndAt: T + 30 * MIN }), {}, {}, T + 40 * MIN, undefined, T + 10 * MIN)).warmUntil, T + 90 * MIN)
   // A record that went cold, then a long turn's request: warm again.
   assert.equal(pick(lineOf(session(), {}, {}, T + 70 * MIN, undefined, T + 65 * MIN)).warmUntil, T + 125 * MIN)
 })
@@ -85,4 +89,30 @@ test('nothing is shown when off or disabled', () => {
 test('node versions that run .ts without a flag', () => {
   for (const v of ['v22.18.0', 'v22.20.1\n', 'v23.6.0', 'v24.0.0', 'v26.3.1']) assert.equal(nodeOk(v), true, v)
   for (const v of ['v22.17.9', 'v23.5.0', 'v20.19.0', 'v18.0.0', '', 'node: not found']) assert.equal(nodeOk(v), false, v)
+})
+
+test("the line's renewal follows keeper's own rules for a muted, missed, small or spent session", () => {
+  // The status line is the mod's copy of these rules; decide() is keeper's. A present human, a due ping.
+  const cases: Array<Record<string, unknown>> = [
+    {},
+    { doneAt: T },
+    { lastPingHit: false },
+    { lastPingHit: true },
+    { ctxTokens: 1000 },
+    { pingsSoFar: THRESHOLDS.maxPings },
+  ]
+  for (const over of cases) {
+    const s = session(over)
+    const line = pick(lineOf(s, {}, {}, T))
+    const verdict = decide({
+      awaySeconds: 0,
+      ageSec: THRESHOLDS.minAgeSec + 1,
+      ctxTokens: s.ctxTokens as number,
+      pingsSoFar: s.pingsSoFar as number,
+      awayPingsSincePresence: 0,
+      lastPingHit: (s.lastPingHit as boolean | undefined) ?? null,
+      muted: s.doneAt !== undefined,
+    })
+    assert.equal(line.extends, verdict.ping, JSON.stringify(over))
+  }
 })

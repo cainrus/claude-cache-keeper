@@ -65,7 +65,12 @@ Two `Stop` hooks and one `UserPromptSubmit` hook, all the same entry point
    and closes the idle stretch in the ledger as `resumed` (was the last ping
    useful: the stretch had ≥1 ping and ended with a real prompt). The wake turn
    also fires `UserPromptSubmit`; it is recognised by the wake marker in
-   `prompt` and ignored.
+   `prompt` and ignored. Three plugin commands are no resume either:
+   `/cache-keeper:done` and `/cache-keeper:status` are answered and blocked
+   here (no model request); `/cache-keeper:ping` passes untouched, and the
+   mod answers its turn with a fork (`ping-now`, then `forked`), or lets it
+   reach the model as a wake turn where it cannot. A ping by hand is logged as
+   `manual-ping` and never scored.
 5. **`SessionEnd` → `end`** deletes the session state.
 
 The wake message is fixed, one line; its second half (`WAKE_REPLY`, `src/wake-text.ts`) also ends
@@ -138,7 +143,7 @@ it decides which reason the ledger blames.
 
 - `sessions/<session_id>.json` — per-session state (above);
 - `away-budget.json` — the machine-wide bucket;
-- `ledger.jsonl` — one line per decision: `{t, sessionId, event: ping|skip|resume|wake-hit|wake-miss, reason?, ctxTokens?, ageSec?}`.
+- `ledger.jsonl` — one line per decision: `{t, sessionId, event, reason?, ctxTokens?, ageSec?, ...}`; the events are `LedgerEvent` in `src/ledger.ts` (`ping`, `skip`, `resume`, `wake-hit`, `wake-miss`, `manual-ping`, the handoff ones, ...).
 
 `cache-keeper report` summarises the ledger: pings, hits, misses, stretches
 resumed after a ping vs abandoned, refusals by reason, and an estimated balance

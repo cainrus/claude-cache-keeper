@@ -7,7 +7,8 @@
  *
  *   turn.step         the first model request of a turn: `!` commands, whatever
  *                     else started a turn without a prompt hook. A refusal is
- *                     answered here, so no request is sent.
+ *                     answered here, so no request is sent. `/cache-keeper:ping`'s
+ *                     turn is answered here too, by a fork (keepalive.ts).
  *   session.compact   `/compact`, which sends the whole context cold.
  *
  * Every hook fails open: a broken gate lets the input through.
@@ -18,7 +19,7 @@
  */
 
 import type { Register } from 'claude-code'
-import { beforeCompact, keepaliveCompacted, keepaliveStarted, keepaliveTurnDone } from './keepalive.ts'
+import { beforeCompact, isPingTurn, keepaliveCompacted, keepaliveStarted, keepaliveTurnDone, manualPing } from './keepalive.ts'
 import { statusRequested, statusStarted, statusTurnDone } from './status.ts'
 
 /** The spawn behind menu choice 2 may take a while (handoff-run.ts allows it 45 s). */
@@ -72,8 +73,10 @@ export const register: Register = on => {
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId === undefined && e.index === 0) {
-      const reason = await ask($, began.get(e.turnId) ?? '', true)
+      const text = began.get(e.turnId) ?? ''
       began.delete(e.turnId)
+      // `/cache-keeper:ping`: a fork answers it; undefined lets it reach the model as a wake turn.
+      const reason = isPingTurn(text) ? await manualPing($) : await ask($, text, true)
       if (reason !== undefined) {
         yield { kind: 'text', index: 0, text: reason }
         yield { kind: 'stop', stopReason: 'end_turn', usage: null }

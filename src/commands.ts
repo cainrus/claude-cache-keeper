@@ -14,11 +14,14 @@ import type { Config } from './config.ts'
 import { handoffMessage, interceptPrompt, requestHandoff, settleHandoff, wantsHandoff, type HandoffIO } from './handoff.ts'
 import { appendLedger, type RefusalReason } from './ledger.ts'
 import { takeNotices } from './notices.ts'
+import { statusReport } from './inspect.ts'
 import { decide, isAtKeyboard } from './policy.ts'
 import {
+  closePing,
+  compactedSinceRequest,
   deleteSession,
+  forkOwns,
   loadAwayBudget,
-  loadForkClaim,
   loadSession,
   newSession,
   saveAwayBudget,
@@ -63,6 +66,8 @@ export interface Ctx {
   handoffIO?: HandoffIO
   /** Is this a background session, nobody at its input box (presence.ts)? Asked only at the menu. */
   background?: (transcriptPath?: string) => boolean
+  /** The environment the config came from, for `/cache-keeper:status`. Defaults to process.env. */
+  env?: NodeJS.ProcessEnv
 }
 
 const blockingSleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
@@ -99,10 +104,40 @@ export function isWakePrompt(prompt: string | undefined): boolean {
 /** The plugin's `/cache-keeper:done`. The hook sees the typed line itself (measured on 2.1.30x). */
 export const DONE_COMMAND = '/cache-keeper:done'
 
-export function isDoneCommand(prompt: string | undefined): boolean {
+function isCommand(prompt: string | undefined, command: string): boolean {
   if (typeof prompt !== 'string') return false
   const p = prompt.trim()
-  return p === DONE_COMMAND || p.startsWith(`${DONE_COMMAND} `)
+  return p === command || p.startsWith(`${command} `)
+}
+
+export function isDoneCommand(prompt: string | undefined): boolean {
+  return isCommand(prompt, DONE_COMMAND)
+}
+
+/** `/cache-keeper:status`: answered by the prompt hook, like `done`. */
+export const STATUS_COMMAND = '/cache-keeper:status'
+
+export function isStatusCommand(prompt: string | undefined): boolean {
+  return isCommand(prompt, STATUS_COMMAND)
+}
+
+/**
+ * `/cache-keeper:ping`: the prompt hook lets it through and the plugin's mod
+ * answers its turn with a fork (hooks/keepalive.ts). Where the mod does not
+ * load, commands/ping.md reaches the model as a wake turn, which reads the
+ * cache too. A turn may carry the typed line, the command's tag, or the
+ * file's body, which starts with PING_MARKER. hooks/keepalive.ts `isPingTurn`
+ * is the mod's copy of this test; keep the two in step.
+ */
+export const PING_COMMAND = '/cache-keeper:ping'
+export const PING_MARKER = '[cache-keeper:ping]'
+
+export function isPingCommand(prompt: string | undefined): boolean {
+  if (typeof prompt !== 'string') return false
+  if (isCommand(prompt, PING_COMMAND)) return true
+  // Anchored at the start, so a message that merely quotes the marker or the tag is a message.
+  const p = prompt.trim()
+  return p.startsWith(PING_MARKER) || (p.startsWith('<command-') && p.includes(`<command-name>${PING_COMMAND}</command-name>`))
 }
 
 export const DONE_REPLY =
@@ -154,15 +189,21 @@ export function record(input: HookInput, ctx: Ctx): number {
   // A fork ping is scored by `forked`: a Stop never closes one.
   const closedWake = state.pendingPing && state.pingTransport !== 'fork'
   if (closedWake) {
-    state.pendingPing = false
+    // Scored only when it was keeper's own ping. A `/cache-keeper:ping` the model answered
+    // (its fork failed, or forks are off) is `manual-ping`; a handoff turn writes a brief
+    // and keeps its cost in the report, but is no ping: it neither mutes nor counts as a hit.
+    const manual = state.pingManual === true
+    const handoffTurn = state.handoffPending === true
+    closePing(state)
     if (usage) {
       const denom = usage.cacheRead + usage.cacheWrite
       const hit = denom > 0 && usage.cacheRead / denom >= hitRatio
-      state.lastPingHit = hit
+      if (!manual && !handoffTurn) state.lastPingHit = hit
       appendLedger(home, {
         t: iso(ctx.now),
         sessionId: sid,
-        event: hit ? 'wake-hit' : 'wake-miss',
+        event: manual ? 'manual-ping' : hit ? 'wake-hit' : 'wake-miss',
+        ...(handoffTurn && !manual ? { detail: 'handoff' } : {}),
         ctxTokens: usage.ctxTokens,
         model: usage.model,
         inputTokens: usage.inputTokens,
@@ -195,30 +236,6 @@ export function record(input: HookInput, ctx: Ctx): number {
   saveSession(home, state)
   if (handoff) settleHandoff(home, sid, ctx.now)
   return 0
-}
-
-/** How long before the last turn the mod may have armed and still own its stretch (hook order varies). */
-export const ARM_SLACK_MS = 60_000
-
-/**
- * Does the plugin's mod send this session's pings (fork.ts)? Then the Stop
- * sleeper stands down; otherwise the mod does. One owner per stretch, so a
- * stretch never gets both a fork and a wake turn.
- */
-export function forkOwns(state: SessionState, config: Config): boolean {
-  if (!config.forkPings) return false
-  const armedAt = loadForkClaim(config.home, state.sessionId)
-  return armedAt !== undefined && armedAt >= (state.lastTurnEndAt ?? 0) - ARM_SLACK_MS
-}
-
-/**
- * A compaction since the last request Claude Code sent (the mod reports it):
- * the new prefix is in no cache yet, so there is nothing to hold. Measured: a
- * fork after /compact sent the compacted 42k uncached and wrote none of it; a
- * wake turn would write it all, which the person's own next turn pays anyway.
- */
-export function compactedSinceRequest(state: SessionState): boolean {
-  return state.compactedAt !== undefined && state.compactedAt >= (state.lastRequestAt ?? 0)
 }
 
 /** A ping sent this recently and not scored yet is still on its way: a second one would double it. */
@@ -308,6 +325,7 @@ export function decideWake(input: HookInput, ctx: Ctx, transport: 'turn' | 'fork
     const path = requestHandoff(home, state, ctx.now, auto)
     state.pendingPing = true
     state.pingTransport = 'turn'
+    delete state.pingManual
     state.handoffRequested = true
     state.handoffPending = true
     state.lastPingAt = ctx.now
@@ -334,6 +352,7 @@ export function decideWake(input: HookInput, ctx: Ctx, transport: 'turn' | 'fork
   state.pendingPing = true
   state.pingTransport = transport
   delete state.forkRetries
+  delete state.pingManual
   state.pingsSoFar += 1
   state.lastPingAt = ctx.now
   saveSession(home, state)
@@ -353,8 +372,21 @@ export function decideWake(input: HookInput, ctx: Ctx, transport: 'turn' | 'fork
  */
 export function touch(input: HookInput, ctx: Ctx, gate = false): number {
   const sid = input.session_id
-  if (!sid || isWakePrompt(input.prompt)) return 0
+  // A ping is not a resume: its turn is the mod's (or a wake turn), and the stretch goes on.
+  if (!sid || isWakePrompt(input.prompt) || isPingCommand(input.prompt)) return 0
   const { home } = ctx.config
+
+  // Read-only, answered here: no model request, the stretch stays open.
+  if (isStatusCommand(input.prompt)) {
+    const s = loadSession(home, sid)
+    ctx.stdout?.(`${JSON.stringify({ decision: 'block', reason: statusReport(s, ctx.config, ctx.env ?? process.env, ctx.now) })}\n`)
+    if (s && gate && input.gate_turn) {
+      s.gateTurnAt = ctx.now
+      saveSession(home, s)
+    }
+    return 0
+  }
+
   const state = loadSession(home, sid) ?? newSession(sid)
   if (input.transcript_path) state.transcriptPath = input.transcript_path
 
@@ -396,7 +428,9 @@ export function touch(input: HookInput, ctx: Ctx, gate = false): number {
   }
 
   state.pingsSoFar = 0
-  state.pendingPing = false
+  closePing(state)
+  // A mod-answered turn that ended with no Stop (Esc, a reload) left its mark: this prompt's Stop is its own.
+  delete state.gateTurnAt
   state.handoffRequested = false
   state.handoffPending = false
   delete state.doneAt

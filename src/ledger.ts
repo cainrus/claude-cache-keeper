@@ -32,6 +32,7 @@ export type LedgerEvent =
   | 'done'
   | 'fork-failed'
   | 'renew'
+  | 'manual-ping'
 
 export interface LedgerEntry {
   /** ISO timestamp. */
@@ -77,7 +78,7 @@ export function parseLedger(text: string): LedgerEntry[] {
     if (line.trim() === '') continue
     try {
       const e = JSON.parse(line)
-      if (e && typeof e.event === 'string' && typeof e.sessionId === 'string') out.push(e)
+      if (e && typeof e.t === 'string' && typeof e.event === 'string' && typeof e.sessionId === 'string') out.push(e)
     } catch {
       // a torn or foreign line: skip it
     }

@@ -14,6 +14,8 @@
  *   fork-retry     the retry timer fired: the fork again, or nothing
  *   compact-check  a compaction is about to run (anthropics/claude-code#105017)
  *   compacted      a compaction finished: no pings until the next turn
+ *   ping-now       `/cache-keeper:ping` reached the mod: a fork, a refusal, or `pass`
+ *                  (forks off: the command's own turn is the ping)
  *
  * Each reads the hook-style JSON on stdin and answers one JSON line on stdout.
  * Without the mod (an older Claude Code, mods off) none of them runs, nothing
@@ -21,9 +23,10 @@
  * turn as before. `CACHE_KEEPER_FORK=0` or `"forkPings": false` does the same.
  */
 
-import { decideWake, forkOwns, WAKE_MARKER, WAKE_MESSAGE, type Ctx, type HookInput } from './commands.ts'
+import { decideWake, PING_IN_FLIGHT_MS, WAKE_MARKER, WAKE_MESSAGE, type Ctx, type HookInput } from './commands.ts'
+import { groupedTokens, hhmm, NOTHING_TO_HOLD } from './format.ts'
 import { appendLedger } from './ledger.ts'
-import { loadSession, saveForkClaim, saveSession } from './state.ts'
+import { closePing, compactedSinceRequest, forkOwns, loadSession, saveForkClaim, saveSession, warmUntilOf } from './state.ts'
 
 // Not WAKE_REPLY: a fork's answer never reaches the transcript, so nobody reads it as the session's last word.
 // A turn sent instead of a fork (fallback, renew) does reach it, and carries WAKE_MESSAGE.
@@ -51,7 +54,7 @@ export interface ForkInput extends HookInput {
 }
 
 export type ForkAnswer =
-  | { action: 'none'; dueInSec?: number }
+  | { action: 'none'; dueInSec?: number; text?: string }
   | { action: 'fork'; prompt: string }
   | { action: 'turn'; text: string }
   | { action: 'pass' }
@@ -88,8 +91,9 @@ export function arm(input: ForkInput, ctx: Ctx, env: NodeJS.ProcessEnv = process
   saveForkClaim(home, sid, ctx.now)
   // A fork in flight did not survive the reload: nothing will score it.
   if (state.pendingPing && state.pingTransport === 'fork') {
-    state.pendingPing = false
-    delete state.forkRetries
+    closePing(state)
+    // Nor will the turn that fork answered end in a Stop the mark could wait for.
+    delete state.gateTurnAt
     saveSession(home, state)
   }
   return answer(ctx, { action: 'none', dueInSec: Math.max(1, delaySec - age) })
@@ -138,6 +142,9 @@ function cacheAgeSec(state: { lastTurnEndAt?: number }, now: number): number {
  * request that late finds the cache gone and writes the whole prefix, which
  * the person's own next turn pays anyway (measured: a fallback turn delayed by
  * a network outage landed 13 min after the failed fork and wrote 436k).
+ * A `/cache-keeper:ping` fork (`pingManual`) is logged, never scored, and
+ * answers with a line for the human; when it fails, the command's own turn
+ * goes to the model at once (the human is waiting), never a retry or a drop.
  */
 export function forked(input: ForkInput, ctx: Ctx): number {
   const sid = input.session_id
@@ -152,11 +159,13 @@ export function forked(input: ForkInput, ctx: Ctx): number {
     const failure = f?.reason ?? 'no-result'
     const ageSec = cacheAgeSec(state, ctx.now)
     const retries = state.forkRetries ?? 0
+    const manual = state.pingManual === true
     const retry =
+      !manual &&
       !FINAL_FORK_FAILURES.has(failure) &&
       retries < MAX_FORK_RETRIES &&
       ageSec + FORK_RETRY_SEC + FORK_TIMEOUT_SEC <= thresholds.maxAgeSec
-    const next = retry ? 'retry' : ageSec < thresholds.maxAgeSec ? 'turn' : 'drop'
+    const next = retry ? 'retry' : manual || ageSec < thresholds.maxAgeSec ? 'turn' : 'drop'
     appendLedger(home, { ...base, event: 'fork-failed', failure, next, ageSec })
     state.lastPingAt = ctx.now
     if (next === 'retry') {
@@ -166,38 +175,99 @@ export function forked(input: ForkInput, ctx: Ctx): number {
     }
     delete state.forkRetries
     if (next === 'drop') {
-      state.pendingPing = false
+      closePing(state)
       saveSession(home, state)
       return answer(ctx, { action: 'none' })
     }
+    // The ping goes on as a wake turn, which `record` closes. A manual one is already a
+    // turn: the mod lets commands/ping.md reach the model, and `record` logs it as manual.
     state.pingTransport = 'turn'
+    // A manual ping's turn now reaches the model: its Stop is a real one again.
+    if (manual) delete state.gateTurnAt
     saveSession(home, state)
     return answer(ctx, { action: 'turn', text: WAKE_MESSAGE })
   }
 
-  const cacheRead = n(f.usage.cache_read_input_tokens)
-  const cacheWrite = n(f.usage.cache_creation_input_tokens)
-  // Input sent uncached counts against the hit, unlike a wake turn's few tokens of prompt.
-  const denom = cacheRead + cacheWrite + n(f.usage.input_tokens)
-  const hit = denom > 0 && cacheRead / denom >= hitRatio
-  delete state.forkRetries
-  state.pendingPing = false
-  state.lastPingHit = hit
+  const usage = {
+    inputTokens: n(f.usage.input_tokens),
+    cacheRead: n(f.usage.cache_read_input_tokens),
+    cacheWrite: n(f.usage.cache_creation_input_tokens),
+    outputTokens: n(f.usage.output_tokens),
+  }
+  const manual = state.pingManual === true
+  closePing(state)
   // The read renewed the cache now: the next ping is timed from here.
   state.lastTurnEndAt = ctx.now
   state.forkPingsHeld = (state.forkPingsHeld ?? 0) + 1
-  saveSession(home, state)
   saveForkClaim(home, sid, ctx.now)
-  appendLedger(home, {
-    ...base,
-    event: hit ? 'wake-hit' : 'wake-miss',
-    transport: 'fork',
-    inputTokens: n(f.usage.input_tokens),
-    cacheRead,
-    cacheWrite,
-    outputTokens: n(f.usage.output_tokens),
-  })
+
+  if (manual) {
+    // Not scored: the oracle and the tuner judge keeper's own timing, not a ping the human asked for.
+    // The mod answers the command's turn itself: its Stop touched nothing.
+    state.gateTurnAt = ctx.now
+    saveSession(home, state)
+    appendLedger(home, { ...base, event: 'manual-ping', transport: 'fork', ...usage })
+    return answer(ctx, { action: 'none', dueInSec: delaySec, text: manualPingText(usage, ctx.now + ctx.config.cacheTtlSec * 1000) })
+  }
+
+  // Input sent uncached counts against the hit, unlike a wake turn's few tokens of prompt.
+  const denom = usage.cacheRead + usage.cacheWrite + usage.inputTokens
+  const hit = denom > 0 && usage.cacheRead / denom >= hitRatio
+  state.lastPingHit = hit
+  saveSession(home, state)
+  appendLedger(home, { ...base, event: hit ? 'wake-hit' : 'wake-miss', transport: 'fork', ...usage })
   return answer(ctx, { action: 'none', dueInSec: delaySec })
+}
+
+/** What `/cache-keeper:ping` answers once its fork came back. */
+export function manualPingText(u: { cacheRead: number; cacheWrite: number }, warmUntil: number): string {
+  if (u.cacheRead === 0) {
+    return `cache-keeper: pinged, but nothing was read from the cache: it had gone cold. ${groupedTokens(u.cacheWrite)} tokens written, cached till ${hhmm(warmUntil)}.`
+  }
+  return `cache-keeper: pinged. Read ${groupedTokens(u.cacheRead)} cached tokens, wrote ${groupedTokens(u.cacheWrite)}; cached till ${hhmm(warmUntil)}.`
+}
+
+/** hooks/keepalive.ts gives a fork 120 s (FORK_TIMEOUT_MS), then up to 20 s for `forked`. */
+export const MANUAL_FORK_MAX_MS = 140_000
+
+/**
+ * `/cache-keeper:ping` reached the mod: may a fork go out now? Unlike `fork-wake`
+ * it asks no policy (the human is here and asked for it) and spends no
+ * automatic budget, but it never pings into nothing: no turn yet, a cold
+ * cache, a compacted prefix, or a ping already on its way. `pass` lets the
+ * command's turn reach the model instead, which reads the cache as a wake turn.
+ */
+export function pingNow(input: ForkInput, ctx: Ctx): number {
+  const sid = input.session_id
+  const { home, enabled, forkPings, cacheTtlSec } = ctx.config
+  const state = sid ? loadSession(home, sid) : undefined
+  const refuse = (why: string) => {
+    // The mod answers the command's turn with this: its Stop touched nothing.
+    if (state) {
+      state.gateTurnAt = ctx.now
+      saveSession(home, state)
+    }
+    return answer(ctx, { action: 'none', text: `cache-keeper: no ping sent: ${why}.` })
+  }
+  if (!sid) return refuse('no session id')
+  if (!enabled) return refuse('keeper is off (enabled: false)')
+  const warmUntil = warmUntilOf(state, cacheTtlSec)
+  if (!state || warmUntil === undefined) return refuse(NOTHING_TO_HOLD.noTurn)
+  if (ctx.now >= warmUntil) return refuse(NOTHING_TO_HOLD.expired(warmUntil))
+  if (compactedSinceRequest(state)) return refuse(NOTHING_TO_HOLD.compacted)
+  if (state.pendingPing && ctx.now - (state.lastPingAt ?? 0) < PING_IN_FLIGHT_MS) return refuse('a ping is already on its way')
+  // Logged once it comes back (`manual-ping`), not as a `ping`: keeper's own pings are what the report counts.
+  // Open like any ping, so the Stop sleeper and the mod's timer do not send a second one meanwhile.
+  state.pendingPing = true
+  state.pingTransport = forkPings ? 'fork' : 'turn'
+  state.pingManual = true
+  state.lastPingAt = ctx.now
+  // With a fork the mod answers the command's turn, even if the CLI fails after it: that Stop is the mod's.
+  // Marked as of when the fork has ended at the latest, so a slow one does not push the Stop out of the window.
+  if (forkPings) state.gateTurnAt = ctx.now + MANUAL_FORK_MAX_MS
+  saveSession(home, state)
+  // Without forks the command's own turn is the ping: `record` closes it.
+  return answer(ctx, forkPings ? { action: 'fork', prompt: FORK_PROMPT } : { action: 'pass' })
 }
 
 /**
@@ -214,8 +284,7 @@ export function forkRetry(input: ForkInput, ctx: Ctx): number {
   const turnSince = (state.lastHumanAt ?? 0) > (state.lastPingAt ?? 0)
   const tooLate = cacheAgeSec(state, ctx.now) + FORK_TIMEOUT_SEC > thresholds.maxAgeSec
   if (turnSince || tooLate) {
-    state.pendingPing = false
-    delete state.forkRetries
+    closePing(state)
     saveSession(home, state)
     return answer(ctx, { action: 'none' })
   }

@@ -13,6 +13,8 @@
  *   session.compact  `compact-check` (via gate.ts): after a stretch held by forks
  *                    alone, one wake turn goes first (anthropics/claude-code#105017);
  *                    `compacted` once it ran: the next ping is a wake turn
+ *   turn.step        `/cache-keeper:ping` (via gate.ts, `manualPing`): `ping-now`, then
+ *                    `$.model.fork`, then `forked`; the fork's line answers the turn
  *
  * Every step fails safe: a CLI that does not answer leaves the stretch
  * unpinged (cheap), never a second ping. Where the module does not load,
@@ -28,7 +30,7 @@ const FORK_TIMEOUT_MS = 120_000
 const COMPACT_AFTER_TURN_MS = 120_000
 
 type Answer =
-  | { action: 'none'; dueInSec?: number }
+  | { action: 'none'; dueInSec?: number; text?: string }
   | { action: 'fork'; prompt: string }
   | { action: 'turn'; text: string }
   | { action: 'pass' }
@@ -86,6 +88,11 @@ async function fork($, prompt: string) {
   }
 }
 
+/** `$.model.fork`'s result in the shape the CLI's `forked` reads. */
+function forkResult(r) {
+  return r.isAnswered ? { isAnswered: true, usage: r.usage } : { isAnswered: false, reason: r.reason }
+}
+
 async function tick($): Promise<void> {
   timer = undefined
   const a = await cli($, 'fork-wake')
@@ -109,8 +116,7 @@ async function sendFork($, prompt: string): Promise<void> {
   } finally {
     forking = false
   }
-  const result = r.isAnswered ? { isAnswered: true, usage: r.usage } : { isAnswered: false, reason: r.reason }
-  const s = await cli($, 'forked', { fork: result })
+  const s = await cli($, 'forked', { fork: forkResult(r) })
   if (s?.action === 'turn') return submit($, s.text)
   if (s?.action === 'none') return reschedule($, s.dueInSec)
   // On `timer`, so a turn that ends meanwhile cancels it by arming its own.
@@ -173,6 +179,48 @@ export function keepaliveTurnDone($, e): void {
 export function keepaliveCompacted($, e, result): void {
   if (e.agentId !== undefined || e.trigger === 'precompute' || result?.skip !== undefined) return
   $.clock.after(0, () => void cli($, 'compacted'))
+}
+
+/** As src/commands.ts has them (`isPingCommand`); the mod does not import the CLI's modules. */
+const PING_COMMAND = '/cache-keeper:ping'
+const PING_MARKER = '[cache-keeper:ping]'
+
+/**
+ * Is this turn `/cache-keeper:ping`'s? A command's turn begins with its tag
+ * (`<command-name>/cache-keeper:ping</command-name>`, seen on 2.1.321); the
+ * typed line and the command file's body are matched too.
+ */
+export function isPingTurn(text: string): boolean {
+  const t = text.trim()
+  if (t === PING_COMMAND || t.startsWith(`${PING_COMMAND} `)) return true
+  // Anchored at the start, so a message that merely quotes the marker or the tag is a message.
+  return t.startsWith(PING_MARKER) || (t.startsWith('<command-') && t.includes(`<command-name>${PING_COMMAND}</command-name>`))
+}
+
+/**
+ * Called by gate.ts's `turn.step` hook for `/cache-keeper:ping`'s turn: the
+ * text to answer it with, no model request, or undefined to let the turn
+ * reach the model (commands/ping.md), which reads the cache as a wake turn.
+ * That is also the way out when the CLI does not answer or the fork fails.
+ */
+export async function manualPing($): Promise<string | undefined> {
+  // A ping already on its way (the timer's fork, say) is refused by the CLI: it holds the open ping.
+  const a = await cli($, 'ping-now')
+  if (a?.action === 'none') return a.text ?? 'cache-keeper: no ping sent.'
+  if (a?.action !== 'fork') return undefined
+  forking = true
+  let r
+  try {
+    r = await fork($, a.prompt)
+  } finally {
+    forking = false
+  }
+  const s = await cli($, 'forked', { fork: forkResult(r) })
+  // The fork failed and the CLI turned the ping into a turn: commands/ping.md answers it.
+  if (s?.action === 'turn') return undefined
+  if (s?.action === 'none' && s.text !== undefined) return s.text
+  // The CLI did not record it: never a second request on top of a fork that went out.
+  return r.isAnswered ? 'cache-keeper: pinged, but keeper could not record it.' : 'cache-keeper: no ping sent: the fork failed.'
 }
 
 /** Called by gate.ts's `session.compact` hook: `{ skip }` while a renewing turn goes first. */

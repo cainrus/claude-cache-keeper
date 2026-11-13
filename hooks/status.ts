@@ -3,9 +3,10 @@
  * keeper is working and until when this session's prompt cache stays warm.
  *
  *   ready                         keeper is on; nothing sent in this session yet
- *   cached till 14:05 · renews ×3 keeper will ping; 3 pings are left in this stretch
+ *   cached till 14:05 · renews ×3 keeper can ping; 3 pings are left in this stretch.
+ *                                 Presence is not read here: away past awaySec, no ping
  *   cached till 14:05             no ping is coming (none left, context too small,
- *                                 muted): 14:05 is final
+ *                                 muted, or a ping missed): 14:05 is final
  *   cache expired                 the cache went cold: the next turn rewrites it
  *   error: needs Node.js ≥ 22.18  the hooks cannot run, so keeper does nothing
  *   (nothing)                     keeper is off or `"statusLine": false`
@@ -79,7 +80,9 @@ export function lineOf(
   requestedAt?: number,
 ): Line | undefined {
   if (!shown(config, env)) return undefined
-  const lastSent = Math.max(num(session?.lastTurnEndAt) ?? 0, num(session?.lastPingAt) ?? 0, requestedAt ?? 0)
+  // Confirmed renewals only: `lastTurnEndAt` moves when a turn or a fork ping came back.
+  // A ping granted but not back yet is no renewal; once its request goes out, `requestedAt` has it.
+  const lastSent = Math.max(num(session?.lastTurnEndAt) ?? 0, requestedAt ?? 0)
   if (lastSent === 0) return { kind: 'ready' }
   const warmUntil = lastSent + (num(config.cacheTtlSec) ?? DEFAULT_TTL_SEC) * 1000
   if (now >= warmUntil) return { kind: 'expired' }
@@ -88,7 +91,8 @@ export function lineOf(
   const left = Math.max(0, max - (num(session?.pingsSoFar) ?? 0))
   // No record yet (the first turn is still running): keeper has nothing to ping from, so no `renews`.
   const bigEnough = (num(session?.ctxTokens) ?? 0) >= (envNum(env.minCtxTokens) ?? num(config.minCtxTokens) ?? DEFAULT_MIN_CTX_TOKENS)
-  const muted = session?.doneAt !== undefined
+  // Muted by /cache-keeper:done, or by a missed ping: the oracle stops pinging the session for good.
+  const muted = session?.doneAt !== undefined || session?.lastPingHit === false
   return { kind: 'cached', left, extends: left > 0 && bigEnough && !muted, warmUntil }
 }
 

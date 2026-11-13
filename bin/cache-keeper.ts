@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { end, gate, record, touch, wake, type Ctx, type HookInput } from '../src/commands.ts'
 import { loadConfig } from '../src/config.ts'
-import { arm, compactCheck, compacted, forked, forkRetry, forkWake } from '../src/fork.ts'
+import { arm, compactCheck, compacted, forked, forkRetry, forkWake, pingNow } from '../src/fork.ts'
 import { realIO } from '../src/handoff-run.ts'
 import { buildHooks, shellQuote, waitCommand } from '../src/hooks.ts'
 import { readLedger } from '../src/ledger.ts'
@@ -25,7 +25,8 @@ Hook subcommands (read the hook input JSON on stdin):
   record            Stop, sync: note the finished turn, score a wake turn
   wake              Stop, after the sleep (asyncRewake): exit 2 = ping, 0 = no ping
   touch             UserPromptSubmit: a real prompt closes the idle stretch;
-                    into a cold cache with a handoff brief, it asks first
+                    into a cold cache with a handoff brief, it asks first.
+                    Answers /cache-keeper:done and /cache-keeper:status itself
   end               SessionEnd: forget the session
   gate              called by the plugin's mod (hooks/gate.ts) before a "!" command, a slash
                     command or a compaction reaches the model; same menu as touch
@@ -33,7 +34,7 @@ Hook subcommands (read the hook input JSON on stdin):
   forked,           $.model.fork; each answers one JSON line (see src/fork.ts)
   fork-retry,
   compact-check,
-  compacted
+  compacted, ping-now
 
 Other:
   report [--json]   summarise the decision ledger
@@ -74,6 +75,7 @@ const HOOKS: Record<string, (input: HookInput, ctx: Ctx) => number> = {
   'fork-retry': forkRetry,
   'compact-check': compactCheck,
   compacted,
+  'ping-now': pingNow,
 }
 
 function main(argv: string[]): number {

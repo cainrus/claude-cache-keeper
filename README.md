@@ -104,6 +104,25 @@ Type `/cache-keeper:done` (plugin install) when you know you will not come back 
 and blocks it, so it costs no model request, and the session gets no more pings or handoff. Your next message in
 that session lifts it. For a rule rather than a one-off, use `skipIf`.
 
+### Status and a ping by hand
+
+`/cache-keeper:status` shows what keeper knows of this session (cached till when, pings used, the context size,
+whether pings go as forks, a missed ping or a mute) and every setting in force with where it came from: `env`,
+`config.json`, `tuned` (the cap) or `default`. It warns about settings that leave keeper unable to ping at all
+(`minAgeSec` not below `maxAgeSec`, or `CACHE_KEEPER_DELAY_SEC` outside them). The hook answers it, so it costs no
+model request.
+
+`/cache-keeper:ping` renews the cache now, say before a meeting, without waiting for keeper's timer. Where the
+plugin's mod loads, a [fork](#fork-pings) answers it: the reply says how many tokens it read from the cache and until
+when the cache is warm. It refuses, at no cost, when nothing is cached yet, the cache already expired, a compaction
+left nothing to hold, or a ping is already on its way. Without the mod (or with `"forkPings": false`) the command
+reaches the model as a one-word turn, which reads the cache too. A ping by hand is outside keeper's budgets and is not
+scored: a cold one does not mute the session, and the tuner never sees it. The ledger logs it as `manual-ping`, and
+its cost is in the report's ping cost.
+
+A [handoff](#handoff) turn is no ping either: it writes the brief, so its cost is in the report's ping cost, but it is
+not counted as a hit or a miss and a miss does not mute the session.
+
 The full rationale is in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Results on one machine
@@ -176,7 +195,7 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | `minAgeSec` | `CACHE_KEEPER_MIN_AGE_SEC` | `3000` | earliest ping |
 | `maxAgeSec` | `CACHE_KEEPER_MAX_AGE_SEC` | `3480` | latest ping |
 | `maxPings` | `CACHE_KEEPER_MAX_PINGS` | auto, from `4` | pings per idle stretch; setting it turns the [tuning](#the-cap-tunes-itself) off |
-| `hitRatio` | `CACHE_KEEPER_HIT_RATIO` | `0.9` | wake turn counts as a hit at `read / (read + write) ≥` this |
+| `hitRatio` | `CACHE_KEEPER_HIT_RATIO` | `0.9` | wake turn counts as a hit at `read / (read + write) ≥` this; a value above 1 is ignored |
 | `prices` | — | opus 5, sonnet 3, haiku 1 | USD per million base input tokens, for `report` |
 | `skipIf` | `CACHE_KEEPER_SKIP_IF` | — | shell command asked before each ping or due handoff; exit 0 skips, exit 3 hands off (see [How it decides](#how-it-decides)) |
 | — | `CACHE_KEEPER_IDLE_SEC` | — | override the presence probe (a number of seconds, or `unknown`) |
@@ -184,6 +203,7 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | `handoff.*` | | | see [Handoff](#handoff) |
 | `statusLine` | — | `true` | show the cache line under the prompt (see [Status line](#status-line)) |
 | `forkPings` | `CACHE_KEEPER_FORK` | `true` | ping with a fork instead of a wake turn where the plugin's mod loads (see [Fork pings](#fork-pings)) |
+| `cacheTtlSec` | — | `3600` | the cache TTL the status line, `/cache-keeper:status`, `/cache-keeper:ping` and the report assume; change it only if yours is not one hour |
 
 The defaults assume the 1-hour TTL of a subscription. On an API key the TTL is 5 minutes unless configured
 otherwise; the first ping will then miss and the oracle will mute the session, which is safe but useless.
@@ -193,10 +213,11 @@ otherwise; the first ping will then miss and the oracle will mute the session, w
 Installed as a plugin, keeper pins one line under the prompt (Claude Code shows it as `⚠ cache-keeper: …`):
 
 - `ready`: keeper is on; nothing has been sent in this session yet.
-- `cached till 14:05 · renews ×3`: the cache stays warm until 14:05, and keeper will extend it; 3 is how many pings
-  it has left in this stretch.
-- `cached till 14:05`: no ping is coming (none left, the context is too small to hold, or the session is muted), so
-  14:05 is final.
+- `cached till 14:05 · renews ×3`: the cache stays warm until 14:05, and keeper can extend it; 3 is how many pings
+  it has left in this stretch. A ping still needs you back within `awaySec` and the away budget unspent: the line
+  cannot see your keyboard, so away longer than that, 14:05 is final after all.
+- `cached till 14:05`: no ping is coming (none left, the context is too small to hold, the session is muted, or a
+  ping missed), so 14:05 is final.
 - `cache expired`: the cache went cold; the next turn rewrites the whole context.
 - `error: needs Node.js ≥ 22.18`: `node` on `PATH` is missing or too old to run the hooks, so keeper does nothing.
 
@@ -295,7 +316,8 @@ input does reach the model, and shows the same menu:
 |---|---|---|
 | `!cmd` | `turn.step` (first request of a turn) | answers the turn itself; no request is sent. The command already ran |
 | `/compact` | `session.compact` | skips the compaction |
-| `/cost`, `/model`, `/status`… | — | make no model request; not gated |
+| `/cache-keeper:ping` | `turn.step` | not the menu: a fork answers the turn (see [Status and a ping by hand](#status-and-a-ping-by-hand)) |
+| `/cost`, `/model`, `/status`… | — | make no model request; not gated (`/cache-keeper:status` is answered by `UserPromptSubmit`) |
 
 "The same message again" means the same command again (for `!` the held text is the command's output, so re-running
 it matches). The module is loaded only when the keeper is installed as a plugin; the `install-snippet` form has no

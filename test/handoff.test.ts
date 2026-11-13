@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { gate, record, touch, wake, WAKE_MARKER } from '../src/commands.ts'
 import { briefPath, continuePath, loadRecord, openTaskSteps, requestHandoff, TASK_LIST_HEADING, type HandoffIO } from '../src/handoff.ts'
 import { readLedger } from '../src/ledger.ts'
+import { summarize } from '../src/report.ts'
 import { postNotice, takeNotices, NOTICE_TTL_MS } from '../src/notices.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
 import { loadSession, newSession, saveSession } from '../src/state.ts'
@@ -524,4 +525,20 @@ test('touch: a real prompt shows pending notices to the human and the model, onc
   touch({ session_id: 'other', prompt: `${WAKE_MARKER} ping` }, ctx)
   assert.equal(out.length, 1, 'a wake prompt is not a human: no notice')
   assert.ok(existsSync(join(home, 'notices')))
+})
+
+test('record: a handoff turn is not scored as a ping: a miss does not mute, the report counts no hit', () => {
+  const s = idleSession(HANDOFF_ENV)
+  const wakeAt = T0 + 50 * MIN
+  assert.equal(wake({ session_id: SID }, makeCtx(s.config, wakeAt)), 2)
+  writeFileSync(briefPath(s.home, SID), BRIEF)
+  // The brief turn wrote the whole context again: by the ratio, a miss.
+  writeFileSync(s.transcript, `${readFileSync(s.transcript, 'utf8')}${assistantLine({ at: wakeAt + 5000, read: 0, write: PRE })}\n`)
+  record({ session_id: SID, transcript_path: s.transcript }, makeCtx(s.config, wakeAt + 6000))
+  assert.equal(loadSession(s.home, SID)!.lastPingHit, true)
+  const turn = readLedger(s.home).find((e) => e.event === 'wake-miss')!
+  assert.equal(turn.detail, 'handoff')
+  const sum = summarize(readLedger(s.home), s.config)
+  assert.equal(sum.misses, 0)
+  assert.ok(sum.pingCostUsd > 0, 'its cost stays in the report')
 })

@@ -34,6 +34,8 @@ export interface Summary {
   misses: number
   /** Pings whose wake turn was never scored (session ended, wake did not land). */
   unscored: number
+  /** `/cache-keeper:ping`s: not scored, but their cost is in `pingCostUsd`. */
+  manualPings: number
   /** Idle stretches that had >= 1 ping and ended with a real prompt. */
   resumedAfterPing: number
   /** ...of those, the ones that came back while the held cache was still alive. */
@@ -90,6 +92,7 @@ export function summarize(entries: LedgerEntry[], config: Pick<Config, 'prices' 
     pings: 0,
     hits: 0,
     misses: 0,
+    manualPings: 0,
     unscored: 0,
     resumedAfterPing: 0,
     savedRewrites: 0,
@@ -115,8 +118,14 @@ export function summarize(entries: LedgerEntry[], config: Pick<Config, 'prices' 
         break
       case 'wake-hit':
       case 'wake-miss':
+        s.pingCostUsd += wakeCostUsd(e, config.prices)
+        // A handoff turn (detail 'handoff') writes a brief: it costs, but was no ping.
+        if (e.detail === 'handoff') break
         if (e.event === 'wake-hit') s.hits++
         else s.misses++
+        break
+      case 'manual-ping':
+        s.manualPings++
         s.pingCostUsd += wakeCostUsd(e, config.prices)
         break
       case 'resume':
@@ -187,6 +196,7 @@ export function formatReport(s: Summary, cap?: CapLine): string {
     row('cache hits', s.hits),
     row('cache misses', s.misses),
     row('not scored', s.unscored),
+    ...(s.manualPings > 0 ? [row('pings by hand', s.manualPings)] : []),
     '',
     'idle stretches with a ping',
     row('resumed', s.resumedAfterPing),

@@ -52,6 +52,8 @@ test('ledger appends whole lines and skips garbage on read', () => {
   appendLedger(home, { t: 'y', sessionId: 's', event: 'skip', reason: 'away' })
   assert.equal(readLedger(home).length, 2)
   assert.deepEqual(parseLedger('{"event":"ping","sessionId":"a","t":"t"}\n{torn\n\n{"foo":1}\n').length, 1)
+  // A foreign line whose t is not a string would crash the report on it.
+  assert.deepEqual(parseLedger('{"event":"ping","sessionId":"a","t":5}\n{"event":"ping","sessionId":"a"}\n'), [])
 })
 
 test('config: defaults, then config.json, then env', () => {

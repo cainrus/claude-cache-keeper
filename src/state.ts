@@ -14,6 +14,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import type { Config } from './config.ts'
 
 export interface SessionState {
   sessionId: string
@@ -50,6 +51,8 @@ export interface SessionState {
   pingTransport?: 'fork' | 'turn'
   /** Forks re-sent for the open ping after one came back with no reply (`forked`). */
   forkRetries?: number
+  /** The open ping is `/cache-keeper:ping`'s: logged as `manual-ping`, never scored. */
+  pingManual?: boolean
   /**
    * Epoch ms of the last main-thread request Claude Code itself saw (a real
    * turn or a wake turn). A fork renews the server's cache but not Claude
@@ -146,4 +149,49 @@ export function loadAwayBudget(home: string): AwayBudget {
 
 export function saveAwayBudget(home: string, budget: AwayBudget): void {
   writeJsonAtomic(awayBudgetPath(home), budget)
+}
+
+// --- what the session record says, read by the CLI and the status report ----
+
+/** How long before the last turn the mod may have armed and still own its stretch (hook order varies). */
+export const ARM_SLACK_MS = 60_000
+
+/**
+ * Does the plugin's mod send this session's pings (fork.ts)? Then the Stop
+ * sleeper stands down; otherwise the mod does. One owner per stretch, so a
+ * stretch never gets both a fork and a wake turn.
+ */
+export function forkOwns(state: SessionState, config: Config): boolean {
+  if (!config.forkPings) return false
+  const armedAt = loadForkClaim(config.home, state.sessionId)
+  return armedAt !== undefined && armedAt >= (state.lastTurnEndAt ?? 0) - ARM_SLACK_MS
+}
+
+/**
+ * A compaction since the last request Claude Code sent (the mod reports it):
+ * the new prefix is in no cache yet, so there is nothing to hold. Measured: a
+ * fork after /compact sent the compacted 42k uncached and wrote none of it; a
+ * wake turn would write it all, which the person's own next turn pays anyway.
+ */
+export function compactedSinceRequest(state: SessionState): boolean {
+  return state.compactedAt !== undefined && state.compactedAt >= (state.lastRequestAt ?? 0)
+}
+
+/**
+ * When the cache goes cold if nothing else is sent: the last confirmed
+ * renewal (a turn, or a fork ping that came back; both move `lastTurnEndAt`)
+ * plus the TTL. A ping granted but never back renews nothing. Undefined while
+ * nothing was sent. hooks/status.ts keeps its own copy (the mod does not
+ * import src/), which also counts the running turn.
+ */
+export function warmUntilOf(state: SessionState | undefined, cacheTtlSec: number): number | undefined {
+  const last = state?.lastTurnEndAt
+  return last === undefined || last === 0 ? undefined : last + cacheTtlSec * 1000
+}
+
+/** The open ping is over (scored, failed for good, or overtaken by a real prompt). */
+export function closePing(state: SessionState): void {
+  state.pendingPing = false
+  delete state.pingManual
+  delete state.forkRetries
 }

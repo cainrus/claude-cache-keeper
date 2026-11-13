@@ -78,13 +78,13 @@ export function resolveHome(env: NodeJS.ProcessEnv = process.env): string {
   return h && h.trim() !== '' ? h : join(env.HOME ?? homedir(), '.claude-cache-keeper')
 }
 
-function num(v: unknown): number | undefined {
+export function num(v: unknown): number | undefined {
   if (typeof v === 'number') return Number.isFinite(v) && v >= 0 ? v : undefined
   if (typeof v === 'string' && v.trim() !== '') return num(Number(v))
   return undefined
 }
 
-function bool(v: unknown): boolean | undefined {
+export function bool(v: unknown): boolean | undefined {
   if (typeof v === 'boolean') return v
   if (typeof v === 'string') {
     const s = v.trim().toLowerCase()
@@ -94,11 +94,11 @@ function bool(v: unknown): boolean | undefined {
   return undefined
 }
 
-function str(v: unknown): string | undefined {
+export function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() !== '' ? v : undefined
 }
 
-function readConfigFile(home: string): Record<string, unknown> {
+export function readConfigFile(home: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'))
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
