@@ -43,7 +43,16 @@ sleep for most of an hour.
 ## Mechanism
 
 Two `Stop` hooks and one `UserPromptSubmit` hook, all the same entry point
-(`bin/cache-keeper.ts`) with a subcommand:
+(`bin/cache-keeper.ts`) with a subcommand. Each command reaches it through
+`bin/cache-keeper.sh`, which runs it only under a node that runs `.ts`
+natively (22.18+, 23.6+, 24+) and otherwise exits 0 in silence. Claude Code
+ships no Node and `/plugin install` checks none, so a fourth hook,
+`SessionStart` → `check`, is where a missing or old one is said: a
+`systemMessage` every session, and once per machine and per problem (the
+`node-asked` file in keeper's home) an `additionalContext` note asking the
+model to offer the setup with AskUserQuestion after the first request. Not
+under `claude -p`: nobody to ask. A button would need the mod, which cannot
+run where the problem is most likely, a first install.
 
 1. **`Stop` → `record`** (synchronous, fast). Reads the hook input, reads the
    last assistant `usage` from `transcript_path`, updates the session state:
@@ -53,7 +62,7 @@ Two `Stop` hooks and one `UserPromptSubmit` hook, all the same entry point
    hit when `cache_read / (cache_read + cache_creation) >= 0.9`. A miss sets
    `lastPingHit = false`, which stops further pings to this session.
 2. **`Stop` → `wait`** (`asyncRewake: true`). The command is
-   `sleep <delay>; node …/cache-keeper.ts wake` so that an idle session costs a
+   `sleep <delay>; sh …/cache-keeper.sh wake` so that an idle session costs a
    ~1 MB `sleep` process, not a 40 MB node process. Hook input stays unread on
    stdin during the sleep and is consumed by `wake` afterwards.
 3. **`wake`** re-reads state. If a newer turn has ended since (`now -

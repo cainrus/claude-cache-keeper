@@ -112,7 +112,8 @@ function main(argv: string[]): number {
     }
   }
 
-  const script = shellQuote(fileURLToPath(import.meta.url))
+  // Hooks enter through the launcher beside this file, which checks Node first.
+  const script = shellQuote(fileURLToPath(new URL('./cache-keeper.sh', import.meta.url)))
   switch (cmd) {
     case 'report': {
       const config = loadConfig()

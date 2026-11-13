@@ -235,6 +235,7 @@ test('cli: --help, --version, install-snippet, unknown command', () => {
   assert.match(run(`${bin} --version`, '', env).stdout, /^\d+\.\d+\.\d+\n$/)
   const snippet = JSON.parse(run(`${bin} install-snippet`, '', env).stdout)
   assert.equal(snippet.hooks.Stop[0].hooks[1].asyncRewake, true)
-  assert.ok(snippet.hooks.Stop[0].hooks[1].command.includes(join(ROOT, 'bin/cache-keeper.ts')))
+  assert.ok(snippet.hooks.Stop[0].hooks[1].command.includes(`sh '${join(ROOT, 'bin/cache-keeper.sh')}' wake`))
+  assert.equal(snippet.hooks.SessionStart[0].hooks[0].command, `sh '${join(ROOT, 'bin/cache-keeper.sh')}' check`)
   assert.equal(run(`${bin} nope`, '', env).status, 64)
 })

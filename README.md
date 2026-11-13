@@ -157,8 +157,20 @@ so this ledger has none yet. On a subscription the balance is usage-limit headro
 
 ## Install
 
-Requires Node **≥ 22.18** on `PATH` (runs `.ts` natively) and a POSIX shell. macOS gives the best presence signal;
-Linux desktops are covered by the probes above, and a headless Linux box runs with presence unknown.
+Requires Node **≥ 22.18** on `PATH` (runs `.ts` natively; on the 23 line, 23.6+) and a POSIX shell. macOS gives the
+best presence signal; Linux desktops are covered by the probes above, and a headless Linux box runs with presence
+unknown.
+
+**Node is not part of Claude Code.** The native installer is one binary with no Node in it, and `/plugin install`
+checks none. So every hook enters through `bin/cache-keeper.sh`, which checks `node --version` first: with no Node,
+or one too old, keeper does nothing and never shows a hook error. Each new session then opens with one line saying
+why, and once per machine (again only if the problem changes, say Node 20 turned up) Claude is told to offer, after
+your first request, to set Node up with the version manager already on the machine. Say no and it is not raised
+again. Keeper itself never installs anything. With mods, the status line shows `error: needs Node.js ≥ 22.18` too.
+
+```sh
+node --version   # v22.18.0 or later
+```
 
 ### As a plugin
 

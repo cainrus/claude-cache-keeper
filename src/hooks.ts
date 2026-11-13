@@ -5,11 +5,14 @@
 
 import { DEFAULT_DELAY_SEC } from './config.ts'
 
-/** Type stripping still warns on some Node 22 releases; on a wake that warning would reach the model. */
-export const NODE = 'node --disable-warning=ExperimentalWarning'
+/**
+ * Every hook enters through bin/cache-keeper.sh: it runs cache-keeper.ts under a
+ * node that can, and otherwise exits 0 in silence (`check` says why).
+ */
+export const LAUNCH = 'sh'
 
 /** The plugin form: Claude Code substitutes the variable before the shell sees it. */
-export const PLUGIN_SCRIPT = '"${CLAUDE_PLUGIN_ROOT}/bin/cache-keeper.ts"'
+export const PLUGIN_SCRIPT = '"${CLAUDE_PLUGIN_ROOT}/bin/cache-keeper.sh"'
 
 /** touch may start a new session from a handoff brief (handoff-run.ts allows the spawn 45 s). */
 export const TOUCH_TIMEOUT_SEC = 60
@@ -32,7 +35,7 @@ export function shellQuote(s: string): string {
 export function waitCommand(script: string): string {
   return (
     `[ "$CLAUDE_CODE_ENTRYPOINT" = sdk-cli ] || ` +
-    `{ sleep "\${CACHE_KEEPER_DELAY_SEC:-${DEFAULT_DELAY_SEC}}"; ${NODE} ${script} wake; }`
+    `{ sleep "\${CACHE_KEEPER_DELAY_SEC:-${DEFAULT_DELAY_SEC}}"; ${LAUNCH} ${script} wake; }`
   )
 }
 
@@ -44,13 +47,15 @@ interface CommandHook {
 }
 
 export interface HooksBlock {
-  hooks: Record<'Stop' | 'UserPromptSubmit' | 'SessionEnd', Array<{ hooks: CommandHook[] }>>
+  hooks: Record<'SessionStart' | 'Stop' | 'UserPromptSubmit' | 'SessionEnd', Array<{ hooks: CommandHook[] }>>
 }
 
 export function buildHooks(script: string): HooksBlock {
-  const run = (sub: string, timeout = 10): CommandHook => ({ type: 'command', command: `${NODE} ${script} ${sub}`, timeout })
+  const run = (sub: string, timeout = 10): CommandHook => ({ type: 'command', command: `${LAUNCH} ${script} ${sub}`, timeout })
   return {
     hooks: {
+      // Silent while Node fits; else says why keeper is off (bin/cache-keeper.sh).
+      SessionStart: [{ hooks: [run('check')] }],
       Stop: [
         {
           hooks: [
