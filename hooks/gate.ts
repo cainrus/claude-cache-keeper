@@ -18,8 +18,12 @@
  * (status.ts), and `session.compact` asks keepalive.ts after the gate.
  */
 
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+// The `.ts` suffix is what Node needs to load these under `npm test`; the
+// validator's own compiler options do not allow it (TS5097), and it reads no tsconfig of ours.
+// @ts-ignore TS5097
 import { beforeCompact, isPingTurn, keepaliveCompacted, keepaliveStarted, keepaliveTurnDone, manualPing } from './keepalive.ts'
+// @ts-ignore TS5097
 import { statusRequested, statusStarted, statusTurnDone } from './status.ts'
 
 /** The spawn behind menu choice 2 may take a while (handoff-run.ts allows it 45 s). */
@@ -29,7 +33,7 @@ const GATE_TIMEOUT_MS = 60_000
 const HELD_CHARS = 4000
 
 /** The reason to show when the gate stopped the input, else undefined. */
-async function ask($, text: string, turn = false): Promise<string | undefined> {
+async function ask($: EngineInterface, text: string, turn = false): Promise<string | undefined> {
   try {
     const sessionId = await $.session.id()
     const { exitCode, stdout } = await $.process.run(

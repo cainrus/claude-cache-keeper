@@ -21,6 +21,12 @@
  * nothing arms, and the Stop sleeper pings with a wake turn as before.
  */
 
+import type { EngineInterface, EventOf, EventResult, ModelForkResult } from 'claude-code'
+
+type $ = EngineInterface
+/** `$.model.fork`'s result, or what `fork` below makes of a timeout or a throw. */
+type ForkOutcome = ModelForkResult | { isAnswered: false; reason: 'timeout' | 'threw' }
+
 const CLI_TIMEOUT_MS = 20_000
 /** `$.session.compact` rejects while a turn runs; turn.complete may come just before it is over. */
 const COMPACT_RETRY_MS = [1_000, 3_000, 10_000]
@@ -43,7 +49,7 @@ let forking = false
 /** A compaction put off behind a renewing turn: run it when that turn ends. */
 let compactAfterTurn: { instructions?: string; at: number } | undefined
 
-async function cli($, cmd: string, payload: Record<string, unknown> = {}): Promise<Answer | undefined> {
+async function cli($: $, cmd: string, payload: Record<string, unknown> = {}): Promise<Answer | undefined> {
   try {
     const sessionId = await $.session.id()
     const { exitCode, stdout } = await $.process.run(
@@ -57,27 +63,27 @@ async function cli($, cmd: string, payload: Record<string, unknown> = {}): Promi
   }
 }
 
-function schedule($, sec: number | undefined): void {
+function schedule($: $, sec: number | undefined): void {
   timer?.cancel()
   timer = sec === undefined ? undefined : $.clock.after(sec * 1000, () => void tick($))
 }
 
-function submit($, text: string): void {
+function submit($: $, text: string): void {
   // Not awaited: it resolves only once the turn starts, after the calling hook.
   void $.prompt.submit({ text }).catch(() => {})
 }
 
 /** Re-arm from a tick, unless a turn ended meanwhile and armed a timer of its own. */
-function reschedule($, sec: number | undefined): void {
+function reschedule($: $, sec: number | undefined): void {
   if (timer === undefined && sec !== undefined) schedule($, sec)
 }
 
-async function fork($, prompt: string) {
+async function fork($: $, prompt: string): Promise<ForkOutcome> {
   let timeout: { cancel: () => void } | undefined
   try {
-    return await Promise.race([
+    return await Promise.race<ForkOutcome>([
       $.model.fork({ prompt }),
-      new Promise(resolve => {
+      new Promise<ForkOutcome>(resolve => {
         timeout = $.clock.after(FORK_TIMEOUT_MS, () => resolve({ isAnswered: false, reason: 'timeout' }))
       }),
     ])
@@ -89,11 +95,11 @@ async function fork($, prompt: string) {
 }
 
 /** `$.model.fork`'s result in the shape the CLI's `forked` reads. */
-function forkResult(r) {
+function forkResult(r: ForkOutcome) {
   return r.isAnswered ? { isAnswered: true, usage: r.usage } : { isAnswered: false, reason: r.reason }
 }
 
-async function tick($): Promise<void> {
+async function tick($: $): Promise<void> {
   timer = undefined
   const a = await cli($, 'fork-wake')
   if (a?.action === 'none') return reschedule($, a.dueInSec)
@@ -102,15 +108,15 @@ async function tick($): Promise<void> {
 }
 
 /** `forked` answered `retry`: ask `fork-retry` once the pause is over. */
-async function retryTick($): Promise<void> {
+async function retryTick($: $): Promise<void> {
   timer = undefined
   const a = await cli($, 'fork-retry')
   if (a?.action === 'fork') await sendFork($, a.prompt)
 }
 
-async function sendFork($, prompt: string): Promise<void> {
+async function sendFork($: $, prompt: string): Promise<void> {
   forking = true
-  let r
+  let r: ForkOutcome
   try {
     r = await fork($, prompt)
   } finally {
@@ -128,7 +134,7 @@ async function sendFork($, prompt: string): Promise<void> {
  * own hooks (measured: "skipped: re-entry"), so gate.ts never sees this one
  * and `compacted` is reported from here.
  */
-async function compactLater($, instructions: string | undefined): Promise<void> {
+async function compactLater($: $, instructions: string | undefined): Promise<void> {
   for (const ms of COMPACT_RETRY_MS) {
     await $.clock.sleep(ms)
     let result
@@ -143,7 +149,7 @@ async function compactLater($, instructions: string | undefined): Promise<void> 
   }
 }
 
-async function afterTurn($, claim: boolean): Promise<void> {
+async function afterTurn($: $, claim: boolean): Promise<void> {
   if (claim) {
     const a = await cli($, 'arm')
     if (a?.action === 'none') schedule($, a.dueInSec)
@@ -156,7 +162,7 @@ async function afterTurn($, claim: boolean): Promise<void> {
 }
 
 /** Called by gate.ts's `session.start` hook, after the engine started: a reload drops the timer. */
-export function keepaliveStarted($): void {
+export function keepaliveStarted($: $): void {
   // Detached, so the session's start is not held by a process spawn.
   $.clock.after(0, async () => {
     const a = await cli($, 'arm', { reload: true })
@@ -165,7 +171,7 @@ export function keepaliveStarted($): void {
 }
 
 /** Called by gate.ts's `turn.complete` hook, after the engine finished the turn. */
-export function keepaliveTurnDone($, e): void {
+export function keepaliveTurnDone($: $, e: EventOf['turn.complete']): void {
   // Detached, so the turn's end is not held by a process spawn.
   // A turn ending under a fork in flight does not claim (the fork's own result re-arms).
   if (e.agentId === undefined) $.clock.after(0, () => void afterTurn($, !forking))
@@ -176,7 +182,7 @@ export function keepaliveTurnDone($, e): void {
  * the next turn sends it, the new prefix is in no cache, so the next ping goes
  * as a wake turn (src/fork.ts). A precompute or a skipped compaction changed nothing.
  */
-export function keepaliveCompacted($, e, result): void {
+export function keepaliveCompacted($: $, e: EventOf['session.compact'], result: EventResult<'session.compact'> | undefined): void {
   if (e.agentId !== undefined || e.trigger === 'precompute' || result?.skip !== undefined) return
   $.clock.after(0, () => void cli($, 'compacted'))
 }
@@ -203,13 +209,13 @@ export function isPingTurn(text: string): boolean {
  * reach the model (commands/ping.md), which reads the cache as a wake turn.
  * That is also the way out when the CLI does not answer or the fork fails.
  */
-export async function manualPing($): Promise<string | undefined> {
+export async function manualPing($: $): Promise<string | undefined> {
   // A ping already on its way (the timer's fork, say) is refused by the CLI: it holds the open ping.
   const a = await cli($, 'ping-now')
   if (a?.action === 'none') return a.text ?? 'cache-keeper: no ping sent.'
   if (a?.action !== 'fork') return undefined
   forking = true
-  let r
+  let r: ForkOutcome
   try {
     r = await fork($, a.prompt)
   } finally {
@@ -224,7 +230,7 @@ export async function manualPing($): Promise<string | undefined> {
 }
 
 /** Called by gate.ts's `session.compact` hook: `{ skip }` while a renewing turn goes first. */
-export async function beforeCompact($, e): Promise<{ skip: string } | undefined> {
+export async function beforeCompact($: $, e: EventOf['session.compact']): Promise<{ skip: string } | undefined> {
   if (e.agentId !== undefined || (e.trigger !== 'manual' && e.trigger !== 'plugin')) return undefined
   const a = await cli($, 'compact-check', { trigger: e.trigger })
   if (a?.action !== 'renew') return undefined

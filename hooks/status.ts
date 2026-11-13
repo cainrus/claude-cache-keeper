@@ -32,6 +32,8 @@
  * Every failure clears the line: a status must never break a session.
  */
 
+import type { EngineInterface as $ } from 'claude-code'
+
 const EVERY_MS = 30_000
 /** The Stop hook writes the record after the turn ends; read it after that. */
 const AFTER_TURN_MS = 4_000
@@ -121,7 +123,7 @@ let nodeBroken: boolean | undefined
 /** The last main-thread model request of this process, with the session it went to (`/clear` changes it). */
 let requested: { sid: string; at: number } | undefined
 
-async function checkNode($): Promise<void> {
+async function checkNode($: $): Promise<void> {
   try {
     const { exitCode, stdout } = await $.process.run(['node', '--version'], { timeoutMs: NODE_CHECK_TIMEOUT_MS })
     nodeBroken = exitCode !== 0 || !nodeOk(stdout)
@@ -131,7 +133,7 @@ async function checkNode($): Promise<void> {
   }
 }
 
-async function readJson($, path: string): Promise<Json | undefined> {
+async function readJson($: $, path: string): Promise<Json | undefined> {
   try {
     const v = JSON.parse(await $.fs.read(path))
     return v && typeof v === 'object' ? (v as Json) : undefined
@@ -140,7 +142,7 @@ async function readJson($, path: string): Promise<Json | undefined> {
   }
 }
 
-async function refresh($): Promise<void> {
+async function refresh($: $): Promise<void> {
   try {
     const sid = await $.session.id()
     const home = (await $.env.get('CACHE_KEEPER_HOME')) ?? `${await $.env.get('HOME')}/.claude-cache-keeper`
@@ -157,7 +159,8 @@ async function refresh($): Promise<void> {
     }
     if (nodeBroken) return $.ui.status(shown(config ?? {}, env) ? NODE_ERROR : undefined)
     const now = await $.clock.now()
-    const line = lineOf(session, config ?? {}, env, now, tuning, requested?.sid === sid ? requested.at : undefined)
+    const req = requested
+    const line = lineOf(session, config ?? {}, env, now, tuning, req?.sid === sid ? req.at : undefined)
     $.ui.status(line === undefined ? undefined : format(line, new Date(line.kind === 'cached' ? line.warmUntil : now).getTimezoneOffset()))
   } catch {
     $.ui.status(undefined)
@@ -165,13 +168,13 @@ async function refresh($): Promise<void> {
 }
 
 /** Called by gate.ts's `session.start` hook: a plugin has one hooks module, and one hook per event. */
-export function statusStarted($): void {
+export function statusStarted($: $): void {
   void checkNode($).then(() => refresh($))
   $.clock.every(EVERY_MS, () => refresh($))
 }
 
 /** Called by gate.ts's `turn.step` hook as a main-thread request goes out. */
-export async function statusRequested($): Promise<void> {
+export async function statusRequested($: $): Promise<void> {
   try {
     requested = { sid: await $.session.id(), at: await $.clock.now() }
   } catch {
@@ -181,6 +184,6 @@ export async function statusRequested($): Promise<void> {
 }
 
 /** Called by gate.ts's `turn.complete` hook. */
-export function statusTurnDone($): void {
+export function statusTurnDone($: $): void {
   $.clock.after(AFTER_TURN_MS, () => refresh($))
 }
