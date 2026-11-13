@@ -209,7 +209,7 @@ Environment variables (set them in the `env` block of your Claude Code settings 
 | `maxAgeSec` | `CACHE_KEEPER_MAX_AGE_SEC` | `3480` | latest ping |
 | `maxPings` | `CACHE_KEEPER_MAX_PINGS` | auto, from `4` | pings per idle stretch; setting it turns the [tuning](#the-cap-tunes-itself) off |
 | `hitRatio` | `CACHE_KEEPER_HIT_RATIO` | `0.9` | wake turn counts as a hit at `read / (read + write) ≥` this; a value above 1 is ignored |
-| `prices` | — | opus 5, sonnet 3, haiku 1 | USD per million base input tokens, for `report` |
+| `prices` | — | per model, list prices of 2026-11-03 (`src/prices.ts`) | USD per million tokens, for `report` and the handoff menu: `{"claude-opus-5-5": {"input": 4, "cacheRead": 0.2, "cacheWrite": 8, "output": 20}}` per model id prefix, or a number for a family (`"opus": 5`: input, with 0.1× read, 2× write, 5× output). No Anthropic API serves prices, so the table is kept by hand; `report` names any model it has no row for |
 | `skipIf` | `CACHE_KEEPER_SKIP_IF` | — | shell command asked before each ping or due handoff; exit 0 skips, exit 3 hands off (see [How it decides](#how-it-decides)) |
 | — | `CACHE_KEEPER_IDLE_SEC` | — | override the presence probe (a number of seconds, or `unknown`) |
 | `handoff.enabled` | `CACHE_KEEPER_HANDOFF` | `false` | write a brief before the cache dies and ask before a prompt hits it cold (see [Handoff](#handoff)) |

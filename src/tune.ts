@@ -22,7 +22,7 @@ import { join } from 'node:path'
 import type { Config } from './config.ts'
 import { type LedgerEntry, readLedger } from './ledger.ts'
 import { THRESHOLDS } from './policy.ts'
-import { MULT } from './report.ts'
+import { DEFAULT_PRICES, type PriceTable, promptOf, rateFor, requestUsd } from './prices.ts'
 import { readJson, writeJsonAtomic } from './state.ts'
 
 export const TUNE = Object.freeze({
@@ -89,18 +89,16 @@ export function positionStats(entries: LedgerEntry[], cacheTtlSec: number): Posi
   return [...sent.keys()].sort((a, b) => a - b).map((k) => ({ k, sent: sent.get(k) ?? 0, warm: warm.get(k) ?? 0 }))
 }
 
-/** Mean of (wake turn cost / rewrite it avoids) over scored hits; both in base-price units, so the model cancels. */
-export function measuredBreakeven(entries: LedgerEntry[]): number {
+/** Mean of (wake turn cost / rewrite it avoids) over scored hits, each at its own model's rates. */
+export function measuredBreakeven(entries: LedgerEntry[], prices: PriceTable = DEFAULT_PRICES): number {
   let sum = 0
   let n = 0
   for (const e of entries) {
     if (e.event !== 'wake-hit' || e.detail === 'handoff' || tok(e.ctxTokens) === 0) continue
-    const cost =
-      tok(e.inputTokens) * MULT.input +
-      tok(e.cacheRead) * MULT.cacheRead +
-      tok(e.cacheWrite) * MULT.cacheWrite +
-      tok(e.outputTokens) * MULT.output
-    sum += cost / (tok(e.ctxTokens) * (MULT.cacheWrite - MULT.cacheRead))
+    const r = rateFor(e.model, prices, promptOf(e))
+    const avoided = (tok(e.ctxTokens) * (r.cacheWrite - r.cacheRead)) / 1e6
+    if (avoided <= 0) continue
+    sum += requestUsd(e, r) / avoided
     n++
   }
   return n > 0 ? sum / n : TUNE.defaultBreakeven

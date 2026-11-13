@@ -40,7 +40,7 @@ import { join } from 'node:path'
 import type { Config } from './config.ts'
 import { appendLedger, type RefusalReason } from './ledger.ts'
 import { postNotice } from './notices.ts'
-import { basePrice, MULT } from './report.ts'
+import { rateFor } from './prices.ts'
 import { readJson, writeJsonAtomic, type SessionState } from './state.ts'
 import { WAKE_REPLY } from './wake-text.ts'
 
@@ -244,7 +244,7 @@ function idleText(ms: number): string {
 }
 
 export function coldRewriteUsd(ctxTokens: number, model: string | undefined, config: Config): number {
-  return (ctxTokens * MULT.cacheWrite * basePrice(model, config.prices)) / 1e6
+  return (ctxTokens * rateFor(model, config.prices, ctxTokens).cacheWrite) / 1e6
 }
 
 function menu(rec: HandoffRecord, state: SessionState, config: Config, now: number, gate: boolean): string {

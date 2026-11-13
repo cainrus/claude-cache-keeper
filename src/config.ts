@@ -9,16 +9,9 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { THRESHOLDS, type Thresholds } from './policy.ts'
+import { mergePrices, type PriceTable } from './prices.ts'
 
-/** USD per million tokens of base input; see `report.ts` for the multipliers. */
-export type PriceTable = Record<string, number>
-
-export const DEFAULT_PRICES: PriceTable = {
-  opus: 5,
-  sonnet: 3,
-  haiku: 1,
-  default: 5,
-}
+export { DEFAULT_PRICES, type PriceTable } from './prices.ts'
 
 export interface Config {
   home: string
@@ -122,13 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const hitRatio = num(env.CACHE_KEEPER_HIT_RATIO) ?? num(file.hitRatio)
   const disabled = bool(env.CACHE_KEEPER_DISABLED)
-  const prices: PriceTable = { ...DEFAULT_PRICES }
-  if (file.prices && typeof file.prices === 'object') {
-    for (const [k, v] of Object.entries(file.prices as Record<string, unknown>)) {
-      const p = num(v)
-      if (p !== undefined) prices[k] = p
-    }
-  }
+  const prices: PriceTable = mergePrices(file.prices)
 
   return {
     home,

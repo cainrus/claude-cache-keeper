@@ -67,7 +67,8 @@ test('config: defaults, then config.json, then env', () => {
   assert.equal(fromFile.thresholds.maxPings, 2)
   assert.equal(fromFile.thresholds.minCtxTokens, THRESHOLDS.minCtxTokens, 'invalid values are ignored')
   assert.equal(fromFile.enabled, false)
-  assert.equal(fromFile.prices.opus, 15)
+  assert.equal(fromFile.prices.opus.input, 15, 'the pre-0.6.6 number form: the input price')
+  assert.equal(fromFile.prices.opus.cacheWrite, 30)
 
   const fromEnv = loadConfig({ ...base, [THRESHOLD_ENV.maxPings]: '7', CACHE_KEEPER_DISABLED: '0', CACHE_KEEPER_HIT_RATIO: '0.8' })
   assert.equal(fromEnv.thresholds.maxPings, 7)
