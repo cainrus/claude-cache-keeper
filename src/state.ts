@@ -53,6 +53,8 @@ export interface SessionState {
   forkRetries?: number
   /** The open ping is `/cache-keeper:ping`'s: logged as `manual-ping`, never scored. */
   pingManual?: boolean
+  /** A failed fork waits on the mod's retry timer (not in flight). */
+  forkRetryParked?: boolean
   /** The last hook of this session that threw (errors.ts); cleared by the next turn `record` closes. */
   lastError?: { at: number; cmd: string; message: string }
   /** When this session was last told of an error (a notice on its next prompt), epoch ms. */
@@ -200,4 +202,5 @@ export function closePing(state: SessionState): void {
   state.pendingPing = false
   delete state.pingManual
   delete state.forkRetries
+  delete state.forkRetryParked
 }

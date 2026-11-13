@@ -188,7 +188,7 @@ export function waitEnd(input: ForkInput, ctx: Ctx): number {
   }
   // A fork waiting on its retry timer: the mod dropped that timer with the wait, so nothing would close it.
   // A fork still in flight is left to `forked`, which scores it and sends nothing after it.
-  if (state.pendingPing && state.pingTransport === 'fork' && state.forkRetries) closePing(state)
+  if (state.pendingPing && state.pingTransport === 'fork' && state.forkRetryParked) closePing(state)
   state.pingsSoFar = 0
   state.lastHumanAt = ctx.now
   delete state.waitingSince
@@ -251,6 +251,7 @@ export function forked(input: ForkInput, ctx: Ctx): number {
     state.lastPingAt = ctx.now
     if (next === 'retry') {
       state.forkRetries = retries + 1
+      state.forkRetryParked = true
       saveSession(home, state)
       return answer(ctx, { action: 'retry', afterSec: FORK_RETRY_SEC })
     }
@@ -258,7 +259,8 @@ export function forked(input: ForkInput, ctx: Ctx): number {
     if (next === 'drop') {
       closePing(state)
       saveSession(home, state)
-      return answer(ctx, { action: 'none' })
+      // The turn that ended while this fork ran left the re-arming to it (keepalive.ts `forking`).
+      return answer(ctx, personBack ? { action: 'none', dueInSec: delaySec } : { action: 'none' })
     }
     // The ping goes on as a wake turn, which `record` closes. A manual one is already a
     // turn: the mod lets commands/ping.md reach the model, and `record` logs it as manual.
@@ -276,9 +278,12 @@ export function forked(input: ForkInput, ctx: Ctx): number {
     outputTokens: n(f.usage.output_tokens),
   }
   const manual = state.pingManual === true
+  // The person came back while it ran: their turn is open, and must still read as open
+  // (lastHumanAt after lastTurnEndAt), so no ping is timed from inside it. Its Stop sets the time.
+  const personBack = (state.lastHumanAt ?? 0) > (state.lastPingAt ?? 0)
   closePing(state)
   // The read renewed the cache now: the next ping is timed from here.
-  state.lastTurnEndAt = ctx.now
+  if (!personBack) state.lastTurnEndAt = ctx.now
   state.forkPingsHeld = (state.forkPingsHeld ?? 0) + 1
   saveForkClaim(home, sid, ctx.now)
 
@@ -370,6 +375,7 @@ export function forkRetry(input: ForkInput, ctx: Ctx): number {
     return answer(ctx, { action: 'none' })
   }
   state.lastPingAt = ctx.now
+  delete state.forkRetryParked
   saveSession(home, state)
   return answer(ctx, { action: 'fork', prompt: FORK_PROMPT })
 }

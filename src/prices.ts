@@ -86,8 +86,7 @@ export function mergePrices(overrides: unknown): PriceTable {
       cacheRead: pos(o.cacheRead) ?? keep?.cacheRead ?? input * 0.1,
       cacheWrite: pos(o.cacheWrite) ?? keep?.cacheWrite ?? input * 2,
       output: pos(o.output) ?? keep?.output ?? input * 5,
-      // A row tuned field by field keeps its long-prompt tier; a new input price drops it.
-      ...(keep?.over100k ? { over100k: keep.over100k } : {}),
+      // An overridden row is the person's price at every prompt size: the table's long-prompt tier goes.
     }
   }
   // A family key ("opus", the pre-0.6.6 form) rewrites every table row it names; model prefixes after it.
@@ -104,12 +103,13 @@ export function mergePrices(overrides: unknown): PriceTable {
 
 /** The row for a model: the longest key that prefixes its id, else one it contains (an override like "opus"), else default. */
 export function rowFor(model: string | undefined, prices: PriceTable): { key: string; rate: Rate } {
-  const m = bareId(model ?? '')
+  const full = (model ?? '').toLowerCase()
+  const m = bareId(full)
   let best: string | undefined
   for (const key of Object.keys(prices)) {
     if (key === 'default') continue
     const k = key.toLowerCase()
-    if (m.startsWith(k) && (best === undefined || k.length > best.length)) best = key
+    if ((m.startsWith(k) || full.startsWith(k)) && (best === undefined || k.length > best.length)) best = key
   }
   if (best === undefined) {
     best = Object.keys(prices).find((key) => key !== 'default' && !key.startsWith('claude-') && m.includes(key.toLowerCase()))

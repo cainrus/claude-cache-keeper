@@ -427,9 +427,24 @@ test('wait: a fork in flight when the answer comes is scored, but a failed one s
   assert.equal(call(forkWake, {}, ctxAt(config, asked + DUE)).action, 'fork')
   call(waitEnd, {}, ctxAt(config, asked + DUE + 1000))
   // api-error would be retried, or fall back to a wake turn, before the person came back.
-  assert.deepEqual(call(forked, { fork: { isAnswered: false, reason: 'api-error' } }, ctxAt(config, asked + DUE + 2000)), { action: 'none' })
+  assert.deepEqual(call(forked, { fork: { isAnswered: false, reason: 'api-error' } }, ctxAt(config, asked + DUE + 2000)), {
+    action: 'none',
+    dueInSec: config.delaySec,
+  })
   assert.equal(readLedger(home).at(-1)?.next, 'drop')
   assert.equal(loadSession(home, SID)!.pendingPing, false)
+})
+
+test('wait: a fork that comes back after the answer is scored, and arms nothing inside the turn', () => {
+  const { home, config } = setup()
+  const asked = T0 + 6 * MIN
+  waitStart({ session_id: SID }, ctxAt(config, asked), INTERACTIVE)
+  assert.equal(call(forkWake, {}, ctxAt(config, asked + DUE)).action, 'fork')
+  call(waitEnd, {}, ctxAt(config, asked + DUE + 1000))
+  assert.equal(call(forked, { fork: HIT }, ctxAt(config, asked + DUE + 2000)).action, 'none')
+  assert.equal(readLedger(home).at(-1)?.event, 'wake-hit')
+  // The mod ignores the dueInSec while the answered turn runs; a timer that fired anyway sends nothing.
+  assert.deepEqual(call(forkWake, {}, ctxAt(config, asked + 2 * DUE)), { action: 'none' })
 })
 
 test('wait: a fork parked on its retry is closed by the answer; no handoff starts during a wait', () => {
@@ -440,6 +455,20 @@ test('wait: a fork parked on its retry is closed by the answer; no handoff start
   assert.equal(call(forked, { fork: { isAnswered: false, reason: 'api-error' } }, ctxAt(config, asked + DUE + 1000)).action, 'retry')
   call(waitEnd, {}, ctxAt(config, asked + DUE + 30_000))
   assert.equal(loadSession(home, SID)!.pendingPing, false, 'the mod dropped the retry timer with the wait')
+
+  // A retry already re-sent is in flight, not parked: the answer leaves it to `forked`, which scores it.
+  const R = T0 + 60 * MIN
+  waitStart({ session_id: SID }, ctxAt(config, R), INTERACTIVE)
+  assert.equal(call(forkWake, {}, ctxAt(config, R + DUE)).action, 'fork')
+  assert.equal(call(forked, { fork: { isAnswered: false, reason: 'api-error' } }, ctxAt(config, R + DUE + 1000)).action, 'retry')
+  assert.equal(call(forkRetry, {}, ctxAt(config, R + DUE + 61_000)).action, 'fork')
+  call(waitEnd, {}, ctxAt(config, R + DUE + 62_000))
+  assert.equal(loadSession(home, SID)!.pendingPing, true)
+  // A failure now: dropped (the person is back), and the mod is told when to arm next.
+  const late = call(forked, { fork: { isAnswered: false, reason: 'api-error' } }, ctxAt(config, R + DUE + 63_000))
+  assert.equal(late.action, 'none')
+  assert.equal((late as { dueInSec?: number }).dueInSec, config.delaySec)
+  assert.equal(loadSession(home, SID)!.pendingPing, false)
 
   // The stretch's pings spent: a handoff would be due; while a question waits, it is a plain skip.
   const W = T0 + 2 * 60 * MIN
