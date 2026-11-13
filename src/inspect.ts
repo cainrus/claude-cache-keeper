@@ -9,6 +9,7 @@
  */
 
 import { bool, num, readConfigFile, str, THRESHOLD_ENV, type Config } from './config.ts'
+import { errorLogPath } from './errors.ts'
 import { hhmm, NOTHING_TO_HOLD, shortTokens } from './format.ts'
 import { THRESHOLDS, type Thresholds } from './policy.ts'
 import { compactedSinceRequest, forkOwns, warmUntilOf, type SessionState } from './state.ts'
@@ -107,6 +108,9 @@ export function sessionLines(state: SessionState | undefined, config: Config, no
   lines.push(`pings are sent as: ${transport}`)
   if (state.lastPingHit !== null) lines.push(`last ping: ${state.lastPingHit ? 'hit' : 'miss, so keeper stopped pinging this session'}`)
   if (state.doneAt !== undefined) lines.push(`muted: by /cache-keeper:done at ${hhmm(state.doneAt)}, until your next message`)
+  if (state.lastError) {
+    lines.push(`error: the ${state.lastError.cmd} hook failed at ${hhmm(state.lastError.at)}: ${state.lastError.message} (log: ${errorLogPath(config.home)})`)
+  }
   if (compactedSinceRequest(state)) lines.push(`compacted: ${NOTHING_TO_HOLD.compacted}`)
   return lines
 }

@@ -7,7 +7,8 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { end, gate, record, touch, wake, type Ctx, type HookInput } from '../src/commands.ts'
-import { loadConfig } from '../src/config.ts'
+import { loadConfig, resolveHome } from '../src/config.ts'
+import { recordError } from '../src/errors.ts'
 import { arm, compactCheck, compacted, forked, forkRetry, forkWake, pingNow } from '../src/fork.ts'
 import { realIO } from '../src/handoff-run.ts'
 import { buildHooks, shellQuote, waitCommand } from '../src/hooks.ts'
@@ -91,9 +92,12 @@ function main(argv: string[]): number {
 
   const hook = HOOKS[cmd]
   if (hook) {
-    // A hook must never break the session it runs in: any failure is exit 0.
+    // A hook must never break the session it runs in: any failure is exit 0, and leaves a trace (errors.ts).
+    let input: HookInput = {}
+    let home: string | undefined
     try {
       const config = loadConfig()
+      home = config.home
       const { skipIf } = config
       const ctx: Ctx = {
         config,
@@ -105,9 +109,15 @@ function main(argv: string[]): number {
         background: (transcriptPath) => isBackgroundSession(process.env, transcriptPath),
         ...(skipIf ? { skipIf: (facts) => runSkipIf(skipIf, facts) } : {}),
       }
-      return hook(parseInput(readStdin()), ctx)
+      input = parseInput(readStdin())
+      return hook(input, ctx)
     } catch (err) {
       process.stderr.write(`cache-keeper ${cmd}: ${(err as Error)?.message ?? err}\n`)
+      try {
+        recordError(home ?? resolveHome(), cmd, input.session_id, err, Date.now())
+      } catch {
+        // never
+      }
       return 0
     }
   }

@@ -233,6 +233,10 @@ Installed as a plugin, keeper pins one line under the prompt (Claude Code shows 
   ping missed), so 14:05 is final.
 - `cache expired`: the cache went cold; the next turn rewrites the whole context.
 - `error: needs Node.js ≥ 22.18`: `node` on `PATH` is missing or too old to run the hooks, so keeper does nothing.
+- `error: record failed · ~/.claude-cache-keeper/errors.log`: a hook of this session threw. Hooks still exit 0 (a
+  session is never broken by keeper), but each failure is now logged there, counted by `report`, shown by
+  `/cache-keeper:status`, and, without mods, told once an hour on the session's next prompt. The line goes away once a
+  turn is recorded cleanly.
 
 It comes from keeper's own session record, refreshed a few seconds after each turn and every 30 s; Node is checked
 once when the session starts. It is a line of its own, not part of your `statusLine` command: Claude Code gives plugins no

@@ -233,6 +233,8 @@ export function record(input: HookInput, ctx: Ctx): number {
 
   const handoff = closedWake && state.handoffPending === true
   state.handoffPending = false
+  // A turn recorded end to end: whatever failed before is not failing now.
+  delete state.lastError
   saveSession(home, state)
   if (handoff) settleHandoff(home, sid, ctx.now)
   return 0

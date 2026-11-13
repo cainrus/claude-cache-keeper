@@ -9,6 +9,7 @@
  *                                 muted, or a ping missed): 14:05 is final
  *   cache expired                 the cache went cold: the next turn rewrites it
  *   error: needs Node.js ≥ 22.18  the hooks cannot run, so keeper does nothing
+ *   error: record failed · <log>  a hook of this session threw; the log says why
  *   (nothing)                     keeper is off or `"statusLine": false`
  *
  * Read from keeper's own files, not the policy: keeper writes
@@ -107,6 +108,17 @@ export function format(l: Line, offsetMin: number): string {
 }
 
 /**
+ * A hook of this session threw (src/errors.ts writes `lastError`): say which,
+ * and where the log is, until a turn is recorded cleanly again.
+ */
+export function errorLine(session: Json | undefined, home: string): string | undefined {
+  const e = session?.lastError
+  if (!e || typeof e !== 'object') return undefined
+  const cmd = (e as Json).cmd
+  return `error: ${typeof cmd === 'string' ? cmd : 'a hook'} failed · ${home}/errors.log`
+}
+
+/**
  * Whether `node --version` output can run the hooks: `.ts` runs without a flag
  * from 22.18 on the 22 line and from 23.6 on the 23 line.
  */
@@ -158,6 +170,8 @@ async function refresh($: $): Promise<void> {
       disabled: await $.env.get('CACHE_KEEPER_DISABLED'),
     }
     if (nodeBroken) return $.ui.status(shown(config ?? {}, env) ? NODE_ERROR : undefined)
+    const failed = errorLine(session, home)
+    if (failed !== undefined && shown(config ?? {}, env)) return $.ui.status(failed)
     const now = await $.clock.now()
     const req = requested
     const line = lineOf(session, config ?? {}, env, now, tuning, req?.sid === sid ? req.at : undefined)

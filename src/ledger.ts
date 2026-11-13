@@ -33,6 +33,8 @@ export type LedgerEvent =
   | 'fork-failed'
   | 'renew'
   | 'manual-ping'
+  /** A hook threw (errors.ts); `detail` is `<hook>: <message>`. */
+  | 'error'
 
 export interface LedgerEntry {
   /** ISO timestamp. */

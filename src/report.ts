@@ -45,6 +45,8 @@ export interface Summary {
   balanceUsd: number
   /** Models with no price row (counted at `default`). */
   unpriced: string[]
+  /** Hooks that threw (errors.ts), by hook. */
+  errors: Record<string, number>
 }
 
 const tok = (v: number | undefined) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
@@ -95,6 +97,7 @@ export function summarize(entries: LedgerEntry[], config: Pick<Config, 'prices' 
     pingCostUsd: 0,
     balanceUsd: 0,
     unpriced: unpricedModels(entries, config.prices),
+    errors: {},
   }
   /** Pings in the currently open idle stretch, per session. */
   const open = new Map<string, number>()
@@ -142,6 +145,11 @@ export function summarize(entries: LedgerEntry[], config: Pick<Config, 'prices' 
         const denom = tok(e.cacheRead) + tok(e.cacheWrite)
         if (denom === 0 || tok(e.cacheRead) / denom < config.hitRatio) s.heldNotUsed++
         s.savedUsd += paidSavedUsd(pending.ctxTokens, e, config.prices) - pending.estimateUsd
+        break
+      }
+      case 'error': {
+        const hook = (e.detail ?? '').split(':')[0] || 'unknown'
+        s.errors[hook] = (s.errors[hook] ?? 0) + 1
         break
       }
       case 'skip':
@@ -198,6 +206,9 @@ export function formatReport(s: Summary, cap?: CapLine): string {
     '',
     `refusals${' '.repeat(16)}${String(s.refusalsTotal).padStart(10)}`,
     ...REFUSAL_REASONS.filter((r) => s.refusals[r]).map((r) => row(r, s.refusals[r] as number)),
+    ...(Object.keys(s.errors).length > 0
+      ? ['', 'hook errors (see errors.log)', ...Object.entries(s.errors).map(([hook, n]) => row(hook, n))]
+      : []),
     '',
     s.measuredResumes > 0
       ? `at API list prices of ${PRICES_AS_OF} (measured where paid, estimated elsewhere)`
