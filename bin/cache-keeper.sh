@@ -24,7 +24,8 @@ case $v in
     minor=${rest%%.*}
     patch=${rest#*.}
     patch=${patch%%[!0-9]*}
-    case $major$minor in *[!0-9]*) major= ;; esac
+    case $major in ''|*[!0-9]*) major= ;; esac
+    case $minor in ''|*[!0-9]*) major= ;; esac
     ;;
 esac
 
@@ -43,18 +44,26 @@ fi
 
 [ "$1" = check ] || exit 0
 
-# Keeper turned off says nothing, as src/config.ts reads it: the env (trimmed,
-# any case), or a top-level "enabled": false in config.json (nested objects,
-# such as handoff's own "enabled", are cut out before the match).
-off=$(printf '%s' "${CACHE_KEEPER_DISABLED:-}" | tr -d ' \t' | tr '[:upper:]' '[:lower:]')
-case $off in 1|true|yes|on) exit 0 ;; esac
-home=${CACHE_KEEPER_HOME:-$HOME/.claude-cache-keeper}
-if [ -r "$home/config.json" ] &&
-  tr -d '\n\r' < "$home/config.json" |
-    sed -e ':a' -e 's/\({[^{}]*\){[^{}]*}/\1/' -e 'ta' |
-    grep -q '"enabled"[[:space:]]*:[[:space:]]*false'; then
-  exit 0
-fi
+# Keeper turned off says nothing, as src/config.ts reads it: the env first
+# (trimmed, any case; it also turns keeper back on over the file), else a
+# top-level "enabled" of false, "false", "no", "off" or "0" in config.json.
+# Arrays and nested objects (handoff's own "enabled") are cut out first.
+lower() { printf '%s' "$1" | tr -d ' \t' | tr '[:upper:]' '[:lower:]'; }
+home=$(lower "${CACHE_KEEPER_HOME:-}")
+home=${home:+$CACHE_KEEPER_HOME}
+home=${home:-$HOME/.claude-cache-keeper}
+case $(lower "${CACHE_KEEPER_DISABLED:-}") in
+  1|true|yes|on) exit 0 ;;
+  0|false|no|off) ;;
+  *)
+    if [ -r "$home/config.json" ] &&
+      tr -d '\n\r' < "$home/config.json" |
+        sed -e ':a' -e 's/\[[^][]*\]/0/' -e 'ta' -e ':b' -e 's/\({[^{}]*\){[^{}]*}/\10/' -e 'tb' |
+        grep -Eiq '"enabled"[[:space:]]*:[[:space:]]*(false|"(false|no|off|0)")'; then
+      exit 0
+    fi
+    ;;
+esac
 
 if [ -z "$v" ]; then found='found none' kind=none
 elif [ -z "$major" ]; then found='and node --version printed no version' kind=garbled
@@ -65,7 +74,7 @@ human="$problem. To fix it, ask Claude: set up Node 22.18 for cache-keeper."
 
 # SessionStart input names its source: startup, resume, clear or compact.
 fresh=
-case $(cat) in *'"source"'*'"startup"'*) fresh=1 ;; esac
+cat | tr -d '\n\r' | grep -Eq '"source"[[:space:]]*:[[:space:]]*"startup"' && fresh=1
 case ${CLAUDE_CODE_ENTRYPOINT:-} in sdk-*) fresh= ;; esac
 
 asked="$home/node-asked"

@@ -80,6 +80,17 @@ test('launcher: the model is asked to offer the setup once per machine for each 
   // A minor upgrade within "too old", or Node gone again: both already asked.
   assert.equal(noteOf(launch('check', pathWith('v20.2.0'), home)), undefined)
   assert.equal(noteOf(launch('check', pathWith(undefined), home)), undefined)
+  // A node that prints no version is a third kind, also asked once.
+  assert.match(noteOf(launch('check', pathWith('v22..0'), home)).additionalContext, /printed no version/)
+  const garbled = launch('check', pathWith('hello'), home)
+  assert.equal(noteOf(garbled), undefined)
+  assert.equal(garbled.stderr, '')
+  assert.deepEqual(readFileSync(join(home, 'node-asked'), 'utf8').split('\n').filter(Boolean), ['none', 'old', 'garbled'])
+})
+
+test('launcher: only a startup source counts, whatever the spacing; "startup" elsewhere does not', () => {
+  assert.ok(noteOf(launch('check', pathWith(undefined), tempHome(), {}, '{\n  "cwd": "/x",\n  "source" : "startup"\n}')))
+  assert.equal(noteOf(launch('check', pathWith(undefined), tempHome(), {}, '{"source":"resume","prompt":"startup"}')), undefined)
 })
 
 test('launcher: no note, and no ask spent, outside a fresh interactive start', () => {
@@ -105,9 +116,27 @@ test('launcher: keeper turned off keeps check quiet, as src/config.ts reads it',
   writeFileSync(join(home, 'config.json'), '{\n  "handoff": { "enabled": true },\n  "enabled" : false\n}\n')
   assert.equal(launch('check', pathWith(undefined), home).stdout, '')
   // handoff's own "enabled": false is not keeper's.
-  const handoffOff = tempHome()
-  writeFileSync(join(handoffOff, 'config.json'), '{"handoff":{"enabled":false,"x":{"y":1}},"enabled":true}')
-  assert.ok(JSON.parse(launch('check', pathWith(undefined), handoffOff).stdout).systemMessage)
+  // The env wins over the file, both ways, as in src/config.ts.
+  assert.ok(JSON.parse(launch('check', pathWith(undefined), home, { CACHE_KEEPER_DISABLED: ' Off ' }).stdout).systemMessage)
+  const quoted = tempHome()
+  writeFileSync(join(quoted, 'config.json'), '{"enabled":"OFF"}')
+  assert.equal(launch('check', pathWith(undefined), quoted).stdout, '')
+  // handoff's own "enabled": false, or one inside an array, is not keeper's.
+  for (const json of [
+    '{"handoff":{"enabled":false,"x":{"y":1}},"enabled":true}',
+    '{"list":[{"enabled":false},[1,2]],"handoff":{"enabled":false}}',
+  ]) {
+    const h = tempHome()
+    writeFileSync(join(h, 'config.json'), json)
+    assert.ok(JSON.parse(launch('check', pathWith(undefined), h).stdout).systemMessage, json)
+  }
+})
+
+test('launcher: a blank CACHE_KEEPER_HOME means the default, as in src/config.ts', () => {
+  const home = tempHome()
+  const r = launch('check', pathWith(undefined), home, { CACHE_KEEPER_HOME: '  ' })
+  assert.ok(noteOf(r))
+  assert.equal(readFileSync(join(home, '.claude-cache-keeper', 'node-asked'), 'utf8'), 'none\n')
 })
 
 test('launcher: a home that cannot be made still says why, without the note', () => {
