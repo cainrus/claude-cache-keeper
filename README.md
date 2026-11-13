@@ -269,6 +269,13 @@ renews it, and nothing is added to the transcript, so no other hook runs and the
   Claude Code runs after a compaction marks the session, so the `Stop` sleeper armed before `/compact` does not ping
   the old, larger context into a cache that holds none of the new one.
 
+- A question for you (`AskUserQuestion`) holds the turn open until you answer: no `Stop`, so before 0.6.6 nothing
+  kept the cache, and an answer given an hour later rewrote the whole context (one machine, one week: 8 such
+  rewrites, the longest wait 45 h). With mods, the wait is now a stretch like any idle one: forks hold the cache under
+  the same policy and budgets, and your answer counts as a resume in the report. Never a wake turn: a prompt sent
+  into the open turn would land inside it, so a fork that fails for good is dropped. Without mods there is no hook
+  that runs while the question waits, so this gap stays open there.
+
 Measured on Claude Code 2.1.316 with a subscription (1-hour cache TTL):
 
 | observation | value |

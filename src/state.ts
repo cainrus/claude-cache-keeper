@@ -57,6 +57,8 @@ export interface SessionState {
   lastError?: { at: number; cmd: string; message: string }
   /** When this session was last told of an error (a notice on its next prompt), epoch ms. */
   errorNoticeAt?: number
+  /** Epoch ms since the main thread waits at AskUserQuestion (the mod's `wait-start`); the turn is open. */
+  waitingSince?: number
   /**
    * Epoch ms of the last main-thread request Claude Code itself saw (a real
    * turn or a wake turn). A fork renews the server's cache but not Claude

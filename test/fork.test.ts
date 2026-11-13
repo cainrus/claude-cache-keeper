@@ -15,6 +15,8 @@ import {
   forkWake,
   type ForkAnswer,
   type ForkResult,
+  waitEnd,
+  waitStart,
 } from '../src/fork.ts'
 import { readLedger } from '../src/ledger.ts'
 import { THRESHOLDS as T } from '../src/policy.ts'
@@ -373,6 +375,60 @@ test('compacted: nothing is pinged until the next turn, by either transport', ()
   record({ session_id: SID, transcript_path: transcript }, makeCtx(config, T0 + 10 * MIN + 500))
   arm({ session_id: SID }, ctxAt(config, T0 + 10 * MIN + 600), INTERACTIVE)
   assert.equal(call(forkWake, {}, ctxAt(config, T0 + 10 * MIN + DUE)).action, 'fork')
+})
+
+// --- a turn held open by AskUserQuestion (#3683) ---------------------------------
+
+test('wait: a question holds the turn open; forks keep the cache, never a wake turn, and the answer is a resume', () => {
+  const { home, config } = setup()
+  touch({ session_id: SID, prompt: 'do the thing' }, ctxAt(config, T0 + 5 * MIN))
+  const asked = T0 + 6 * MIN
+  // The request that asked renewed the cache: the stretch starts there.
+  assert.deepEqual(waitStart({ session_id: SID }, ctxAt(config, asked), INTERACTIVE) === 0 && loadSession(home, SID)!.waitingSince, asked)
+  assert.equal(loadSession(home, SID)!.lastTurnEndAt, asked)
+
+  // The Stop sleeper armed by the last turn never sends a wake turn into the open one.
+  saveForkClaim(home, SID, 0)
+  assert.equal(wake({ session_id: SID }, ctxAt(config, asked + DUE)), 0)
+  saveForkClaim(home, SID, asked)
+
+  // The mod's timer: a fork, scored like any ping.
+  assert.deepEqual(call(forkWake, {}, ctxAt(config, asked + DUE)), { action: 'fork', prompt: FORK_PROMPT })
+  assert.equal(call(forked, { fork: HIT }, ctxAt(config, asked + DUE + 2000)).action, 'none')
+  assert.equal(readLedger(home).at(-1)?.event, 'wake-hit')
+
+  // A fork that fails for good is dropped: no fallback turn inside the open turn.
+  const second = asked + DUE + 2000 + DUE
+  assert.equal(call(forkWake, {}, ctxAt(config, second)).action, 'fork')
+  assert.deepEqual(call(forked, { fork: { isAnswered: false, reason: 'nothing-to-fork' } }, ctxAt(config, second + 1000)), { action: 'none' })
+  assert.equal(readLedger(home).at(-1)?.next, 'drop')
+  assert.equal(loadSession(home, SID)!.pendingPing, false)
+
+  // The answer: a resume of a pinged stretch, the pings start over, the turn goes on.
+  const answered = second + 5 * MIN
+  call(waitEnd, {}, ctxAt(config, answered))
+  const resume = readLedger(home).at(-1)!
+  assert.equal(resume.event, 'resume')
+  assert.equal(resume.detail, 'question')
+  assert.equal(resume.pings, 2)
+  const s = loadSession(home, SID)!
+  assert.equal(s.waitingSince, undefined)
+  assert.equal(s.pingsSoFar, 0)
+  assert.equal(s.lastHumanAt, answered)
+  assert.equal(s.resumeAt, answered)
+  // Until the turn ends, the timer has nothing to send.
+  assert.deepEqual(call(forkWake, {}, ctxAt(config, answered + DUE)), { action: 'none' })
+})
+
+test('wait: off without forks, for a session never recorded, and under claude -p', () => {
+  const { home, config } = setup({ CACHE_KEEPER_FORK: '0' })
+  assert.deepEqual(call(waitStart, {}, ctxAt(config, T0 + MIN)), { action: 'none' })
+  assert.equal(loadSession(home, SID)!.waitingSince, undefined)
+  const on = setup()
+  assert.deepEqual(call((i, c) => waitStart(i, c, { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }), {}, ctxAt(on.config, T0 + MIN)), { action: 'none' })
+  assert.deepEqual(call((i, c) => waitStart(i, c, INTERACTIVE), { session_id: 'nobody' }, ctxAt(on.config, T0 + MIN)), { action: 'none' })
+  // An answer with no wait open changes nothing.
+  assert.deepEqual(call(waitEnd, {}, ctxAt(on.config, T0 + MIN)), { action: 'none' })
 })
 
 test('compacted-start: without the mod, the SessionStart after /compact stops the Stop sleeper too (#3709)', () => {

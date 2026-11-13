@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { end, gate, record, touch, wake, type Ctx, type HookInput } from '../src/commands.ts'
 import { loadConfig, resolveHome } from '../src/config.ts'
 import { recordError } from '../src/errors.ts'
-import { arm, compactCheck, compacted, compactedStart, forked, forkRetry, forkWake, pingNow } from '../src/fork.ts'
+import { arm, compactCheck, compacted, compactedStart, forked, forkRetry, forkWake, pingNow, waitEnd, waitStart } from '../src/fork.ts'
 import { realIO } from '../src/handoff-run.ts'
 import { buildHooks, shellQuote, waitCommand } from '../src/hooks.ts'
 import { readLedger } from '../src/ledger.ts'
@@ -35,7 +35,8 @@ Hook subcommands (read the hook input JSON on stdin):
   forked,           $.model.fork; each answers one JSON line (see src/fork.ts)
   fork-retry,
   compact-check,
-  compacted, ping-now
+  compacted, ping-now,
+  wait-start, wait-end  (the last two: AskUserQuestion holds the turn open; forks hold the cache)
   compacted-start   SessionStart after a compaction (via bin/cache-keeper.sh check):
                     no pings until the next turn, without the mod too
 
@@ -79,6 +80,8 @@ const HOOKS: Record<string, (input: HookInput, ctx: Ctx) => number> = {
   'compact-check': compactCheck,
   compacted,
   'compacted-start': compactedStart,
+  'wait-start': (input, ctx) => waitStart(input, ctx),
+  'wait-end': waitEnd,
   'ping-now': pingNow,
 }
 

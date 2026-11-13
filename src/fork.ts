@@ -106,7 +106,8 @@ export function forkWake(input: ForkInput, ctx: Ctx): number {
   if (!state || !forkOwns(state, ctx.config)) return answer(ctx, { action: 'none' })
   const out = decideWake(input, ctx, 'fork')
   if (out.kind === 'ping') return answer(ctx, { action: 'fork', prompt: FORK_PROMPT })
-  if (out.kind === 'handoff') return answer(ctx, { action: 'turn', text: out.message })
+  // A handoff is a turn, and a turn held open by a question takes none.
+  if (out.kind === 'handoff' && state.waitingSince === undefined) return answer(ctx, { action: 'turn', text: out.message })
   return answer(ctx, out.retryInSec !== undefined ? { action: 'none', dueInSec: out.retryInSec } : { action: 'none' })
 }
 
@@ -136,6 +137,60 @@ export function compactedStart(input: HookInput, ctx: Ctx): number {
     saveSession(ctx.config.home, state)
   }
   return 0
+}
+
+/**
+ * The mod saw the main thread stop at AskUserQuestion. The turn stays open
+ * until the person answers, so no Stop records it, no sleeper is armed, and an
+ * answer that came an hour later used to rewrite the whole context (#3683:
+ * 8 such rewrites in a week, the longest wait 45 h). The request that asked has
+ * just renewed the cache, so the stretch starts now, and fork pings hold it as
+ * after a turn's end, under the same policy. Wake turns never: a prompt sent
+ * into the open turn would land inside it.
+ */
+export function waitStart(input: ForkInput, ctx: Ctx, env: NodeJS.ProcessEnv = process.env): number {
+  const sid = input.session_id
+  const { home, enabled, forkPings, delaySec } = ctx.config
+  if (!sid || !enabled || !forkPings || env.CLAUDE_CODE_ENTRYPOINT === 'sdk-cli') return answer(ctx, { action: 'none' })
+  const state = loadSession(home, sid)
+  if (!state || state.lastTurnEndAt === undefined) return answer(ctx, { action: 'none' })
+  state.lastTurnEndAt = ctx.now
+  state.lastRequestAt = ctx.now
+  state.forkPingsHeld = 0
+  state.waitingSince = ctx.now
+  saveSession(home, state)
+  saveForkClaim(home, sid, ctx.now)
+  return answer(ctx, { action: 'none', dueInSec: delaySec })
+}
+
+/**
+ * The question was answered (or the call ended otherwise): the person is back,
+ * as with a real prompt. A pinged wait is logged as a `resume`, so the report
+ * counts what it saved, and the stretch's pings start over.
+ */
+export function waitEnd(input: ForkInput, ctx: Ctx): number {
+  const sid = input.session_id
+  const state = sid ? loadSession(ctx.config.home, sid) : undefined
+  if (!sid || !state || state.waitingSince === undefined) return answer(ctx, { action: 'none' })
+  if (state.pingsSoFar > 0) {
+    appendLedger(ctx.config.home, {
+      t: iso(ctx.now),
+      sessionId: sid,
+      event: 'resume',
+      detail: 'question',
+      pings: state.pingsSoFar,
+      lastPingHit: state.lastPingHit,
+      ctxTokens: state.ctxTokens,
+      model: state.model,
+      ageSec: cacheAgeSec(state, ctx.now),
+    })
+    state.resumeAt = ctx.now
+  }
+  state.pingsSoFar = 0
+  state.lastHumanAt = ctx.now
+  delete state.waitingSince
+  saveSession(ctx.config.home, state)
+  return answer(ctx, { action: 'none' })
 }
 
 /** Forks re-sent for one ping before it falls back to the wake turn. */
@@ -182,7 +237,9 @@ export function forked(input: ForkInput, ctx: Ctx): number {
       !FINAL_FORK_FAILURES.has(failure) &&
       retries < MAX_FORK_RETRIES &&
       ageSec + FORK_RETRY_SEC + FORK_TIMEOUT_SEC <= thresholds.maxAgeSec
-    const next = retry ? 'retry' : manual || ageSec < thresholds.maxAgeSec ? 'turn' : 'drop'
+    // A turn held open by a question takes no wake turn: a prompt sent now would land inside it.
+    const waiting = state.waitingSince !== undefined
+    const next = retry ? 'retry' : manual || (!waiting && ageSec < thresholds.maxAgeSec) ? 'turn' : 'drop'
     appendLedger(home, { ...base, event: 'fork-failed', failure, next, ageSec })
     state.lastPingAt = ctx.now
     if (next === 'retry') {

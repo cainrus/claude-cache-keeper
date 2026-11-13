@@ -21,8 +21,9 @@
 import type { EngineInterface, Register } from 'claude-code'
 // The `.ts` suffix is what Node needs to load these under `npm test`; the
 // validator's own compiler options do not allow it (TS5097), and it reads no tsconfig of ours.
+// Each import stays on one line: @ts-ignore covers the next line only.
 // @ts-ignore TS5097
-import { beforeCompact, isPingTurn, keepaliveCompacted, keepaliveStarted, keepaliveTurnDone, manualPing } from './keepalive.ts'
+import { beforeCompact, isPingTurn, keepaliveCompacted, keepaliveStarted, keepaliveTurnDone, keepaliveWaitEnd, keepaliveWaitStart, manualPing } from './keepalive.ts'
 // @ts-ignore TS5097
 import { statusRequested, statusStarted, statusTurnDone } from './status.ts'
 
@@ -90,6 +91,17 @@ export const register: Register = on => {
     // The request goes out: the cache is written now, long before the turn's Stop records it.
     if (e.agentId === undefined) void statusRequested($)
     return yield* next(e)
+  })
+
+  // A question for the person holds the turn open: no Stop, so no sleeper and no
+  // turn.complete. Keep the cache warm by fork while the answer is awaited.
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    await keepaliveWaitStart($)
+    try {
+      return await next(e)
+    } finally {
+      await keepaliveWaitEnd($)
+    }
   })
 
   on('session.compact', async ($, e, next) => {

@@ -233,8 +233,9 @@ export function record(input: HookInput, ctx: Ctx): number {
 
   const handoff = closedWake && state.handoffPending === true
   state.handoffPending = false
-  // A turn recorded end to end: whatever failed before is not failing now.
+  // A turn recorded end to end: whatever failed before is not failing now, and no question is pending.
   delete state.lastError
+  delete state.waitingSince
   saveSession(home, state)
   if (handoff) settleHandoff(home, sid, ctx.now)
   return 0
@@ -271,6 +272,8 @@ export function decideWake(input: HookInput, ctx: Ctx, transport: 'turn' | 'fork
   const state = loadSession(home, sid)
   if (!state || state.lastTurnEndAt === undefined) return { kind: 'none' }
   if (state.pendingPing && ctx.now - (state.lastPingAt ?? 0) < PING_IN_FLIGHT_MS) return { kind: 'none' }
+  // A turn held open by a question (fork.ts waitStart): only a fork may hold it, never a wake turn.
+  if (state.waitingSince !== undefined && transport === 'turn') return { kind: 'none' }
 
   // A newer turn ended (or started) since this sleeper was armed: its own
   // sleeper owns the session now.
@@ -436,6 +439,7 @@ export function touch(input: HookInput, ctx: Ctx, gate = false): number {
   state.handoffRequested = false
   state.handoffPending = false
   delete state.doneAt
+  delete state.waitingSince
   state.lastHumanAt = ctx.now
   saveSession(home, state)
 

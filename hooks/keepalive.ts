@@ -46,6 +46,8 @@ type Answer =
 // One copy per load: a reload starts these over, and session.start re-arms.
 let timer: { cancel: () => void } | undefined
 let forking = false
+/** A question was answered and its turn has not ended yet: nothing arms until turn.complete. */
+let answered = false
 /** A compaction put off behind a renewing turn: run it when that turn ends. */
 let compactAfterTurn: { instructions?: string; at: number } | undefined
 
@@ -75,7 +77,7 @@ function submit($: $, text: string): void {
 
 /** Re-arm from a tick, unless a turn ended meanwhile and armed a timer of its own. */
 function reschedule($: $, sec: number | undefined): void {
-  if (timer === undefined && sec !== undefined) schedule($, sec)
+  if (timer === undefined && sec !== undefined && !answered) schedule($, sec)
 }
 
 async function fork($: $, prompt: string): Promise<ForkOutcome> {
@@ -126,7 +128,7 @@ async function sendFork($: $, prompt: string): Promise<void> {
   if (s?.action === 'turn') return submit($, s.text)
   if (s?.action === 'none') return reschedule($, s.dueInSec)
   // On `timer`, so a turn that ends meanwhile cancels it by arming its own.
-  if (s?.action === 'retry' && timer === undefined) timer = $.clock.after(s.afterSec * 1000, () => void retryTick($))
+  if (s?.action === 'retry' && timer === undefined && !answered) timer = $.clock.after(s.afterSec * 1000, () => void retryTick($))
 }
 
 /**
@@ -174,7 +176,10 @@ export function keepaliveStarted($: $): void {
 export function keepaliveTurnDone($: $, e: EventOf['turn.complete']): void {
   // Detached, so the turn's end is not held by a process spawn.
   // A turn ending under a fork in flight does not claim (the fork's own result re-arms).
-  if (e.agentId === undefined) $.clock.after(0, () => void afterTurn($, !forking))
+  if (e.agentId === undefined) {
+    answered = false
+    $.clock.after(0, () => void afterTurn($, !forking))
+  }
 }
 
 /**
@@ -185,6 +190,26 @@ export function keepaliveTurnDone($: $, e: EventOf['turn.complete']): void {
 export function keepaliveCompacted($: $, e: EventOf['session.compact'], result: EventResult<'session.compact'> | undefined): void {
   if (e.agentId !== undefined || e.trigger === 'precompute' || result?.skip !== undefined) return
   $.clock.after(0, () => void cli($, 'compacted'))
+}
+
+/**
+ * Called by gate.ts's `tool.call` hook as AskUserQuestion starts waiting for the
+ * person: `wait-start` takes the stretch (the request that asked just renewed
+ * the cache), and the timer runs as after a turn's end. Awaited, so the timer
+ * is set before the question shows; a CLI that does not answer arms nothing.
+ */
+export async function keepaliveWaitStart($: $): Promise<void> {
+  answered = false
+  const a = await cli($, 'wait-start')
+  if (a?.action === 'none') schedule($, a.dueInSec)
+}
+
+/** The answer came (or the call failed): stop the timer; the turn goes on, and its Stop re-arms. */
+export async function keepaliveWaitEnd($: $): Promise<void> {
+  schedule($, undefined)
+  // A fork still in flight must not re-arm the timer inside the running turn.
+  answered = true
+  await cli($, 'wait-end')
 }
 
 /** As src/commands.ts has them (`isPingCommand`); the mod does not import the CLI's modules. */

@@ -176,3 +176,28 @@ test('gate: a message that quotes the marker or the tag still reaches the model'
   }
   assert.ok(!calls.includes('ping-now'))
 })
+
+test('gate: AskUserQuestion holds the cache by fork while the person answers, and stops after', async () => {
+  const { home } = session(5, { CACHE_KEEPER_FORK: '1' })
+  const { $, calls } = fakeEngine(home, HIT, { CLAUDE_CODE_ENTRYPOINT: 'cli' })
+  const timers: Array<{ ms: number; cancelled: boolean }> = []
+  $.clock.after = ((ms: number) => {
+    const t = { ms, cancelled: false }
+    timers.push(t)
+    return { cancel: () => void (t.cancelled = true) }
+  }) as any
+  let waitingWhileAsked: number | undefined
+  const result = await hooksOf()['tool.call']($, { tool: 'AskUserQuestion', questions: [] }, async () => {
+    // The question is on screen: the session waits, and a ping is due one delay on.
+    waitingWhileAsked = loadSession(home, SID)!.waitingSince
+    calls.push('answered')
+    return { result: 'yes' }
+  })
+  assert.deepEqual(result, { result: 'yes' })
+  assert.deepEqual(calls, ['wait-start', 'answered', 'wait-end'])
+  assert.equal(typeof waitingWhileAsked, 'number')
+  assert.equal(timers.length, 1)
+  assert.ok(timers[0].ms >= 60_000, `timer at ${timers[0].ms} ms`)
+  assert.equal(timers[0].cancelled, true, 'the answer stops the timer')
+  assert.equal(loadSession(home, SID)!.waitingSince, undefined)
+})
